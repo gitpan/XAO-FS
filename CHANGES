@@ -1,3 +1,19 @@
+1.03 - 18-Mar-2002
+    * MAJOR: Now NULL and 'undef' are outlawed and never returned
+    * MAJOR: 'default' parameter added to placeholder creation
+    * MAJOR: Fixed major bug with 'unique' treatment on inner objects
+    * Base class changed to Atom to make error throwing uniform
+    * MAJOR: a bug fixed in escaping special characters when searching
+      using 'wq' or 'ws'
+    * MAJOR: fixed bug in relations generation in deep search
+      subroutines; dependencies were wrong when searching for properties
+      of hashes in different lists originating from the same top level
+      object
+    * Added test case for the bug above
+    * check_name method is now available on all FS objects
+    * Removed `mysql' directory and dependance on MySQL-devel;
+      that driver will be distributed separately.
+
 1.02 - 3-Jan-2002
     * Minor index bug fixed, introduced in 1.01
     * versions added to packages for convenience
@@ -16,5 +32,5 @@
     * prefix for default table name changed to 'fs'
     * xao-fs tool modified to accept 'drop' command
 
-1.1 - 2-Nov-2001
+1.0 - 2-Nov-2001
     * Initial public release

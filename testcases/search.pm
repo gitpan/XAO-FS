@@ -128,6 +128,11 @@ EOT
                             [ 'long', 'wq', 'the' ]);
     $self->assert(@$list == 233,
                   "Wrong search results, test 3 (".scalar(@$list).")");
+    $list=$custlist->search([ 'short', 'wq', 'is|not' ],
+                            'or',
+                            [ 'long', 'wq', '[aA]' ]);
+    $self->assert(@$list == 0,
+                  "Wrong search results, test 16 (".scalar(@$list).")");
 
     ##
     # Checking multiple keyword search
@@ -188,7 +193,7 @@ EOT
                                            descend => 'short' ]
                             });
     $self->assert(@$list == 61,
-                  "Wrong search results, test 6 (".scalar(@$list).")");
+                  "Wrong search results, test 15 (".scalar(@$list).")");
     $short=undef;
     $long=undef;
     foreach my $id (@$list) {
@@ -324,6 +329,112 @@ sub test_collection_search {
 
     $self->assert(@$list == 2,
                   "Search results are wrong on collection");
+}
+
+##
+# See note in CHANGES for 1.03 for the bug we're testing here against.
+# First think to do if that test ever fails again is to uncomment
+# printing final SQL statement in Glue.pm and check if table joins are
+# correct.
+# am@xao.com, Jan/18, 2002
+#
+sub test_multiple_branches {
+    my $self=shift;
+    my $odb=$self->get_odb();
+
+    my $customers=$odb->fetch('/Customers');
+
+    my $c=$customers->get_new;
+    $c->build_structure(
+        Orders => {
+            type        => 'list',
+            class       => 'Data::Order',
+            key         => 'order_id',
+            structure   => {
+                name => {
+                    type    => 'text',
+                },
+            },
+        },
+        Products => {
+            type        => 'list',
+            class       => 'Data::Product',
+            key         => 'product_id',
+            structure   => {
+                name => {
+                    type    => 'text',
+                },
+            },
+        },
+    );
+
+    $customers->put('screw' => $c);
+    $c=$customers->get('screw');
+    $c->get('Orders')->put(aaa => $c->get('Orders')->get_new);
+    $c->get('Orders')->get('aaa')->put(name => 'foo');
+    $c->get('Products')->put(bbb => $c->get('Products')->get_new);
+    $c->get('Products')->get('bbb')->put(name => 'bar');
+
+    $c=$customers->get('c1');
+    $c->get('Orders')->put(ooo => $c->get('Orders')->get_new);
+    $c->get('Orders')->get('ooo')->put(name => 'foo');
+    $c->get('Products')->put(ppp => $c->get('Products')->get_new);
+    $c->get('Products')->get('ppp')->put(name => 'bar');
+
+    $c=$customers->get('c2');
+    $c->get('Orders')->put(ooo => $c->get('Orders')->get_new);
+    $c->get('Orders')->get('ooo')->put(name => 'ku');
+    $c->get('Products')->put(ppp => $c->get('Products')->get_new);
+    $c->get('Products')->get('ppp')->put(name => 'ru');
+
+    $customers->put(c3 => $customers->get_new);
+    $c=$customers->get('c3');
+    $c->get('Orders')->put(ooo => $c->get('Orders')->get_new);
+    $c->get('Orders')->get('ooo')->put(name => 'boom');
+    $c->get('Products')->put(ppp => $c->get('Products')->get_new);
+    $c->get('Products')->get('ppp')->put(name => 'ru');
+
+    $customers->put(c4 => $customers->get_new);
+    $c=$customers->get('c4');
+    $c->get('Orders')->put(ooo => $c->get('Orders')->get_new);
+    $c->get('Orders')->get('ooo')->put(name => 'ku');
+    $c->get('Products')->put(ppp => $c->get('Products')->get_new);
+    $c->get('Products')->get('ppp')->put(name => 'duh!');
+
+    my $ids=$customers->search([ 'Products/name', 'eq', 'ku' ],
+                               'or',
+                               [ 'Orders/name', 'eq', 'ru' ],
+                               { orderby => 'customer_id' });
+
+    my $t_ids=join(",",@$ids);
+    $self->assert($t_ids eq '',
+                  "Wrong search results for multi-branch search (got '$t_ids', expect '')");
+
+    $ids=$customers->search([ 'Orders/name', 'eq', 'ku' ],
+                            'or',
+                            [ 'Products/name', 'eq', 'ru' ],
+                            { orderby => 'customer_id' });
+
+    $t_ids=join(",",@$ids);
+    $self->assert($t_ids eq 'c2,c3,c4',
+                  "Wrong search results for multi-branch search (got '$t_ids', expect 'c2,c3,c4')");
+
+    $ids=$customers->search([ 'Orders/name', 'eq', 'kaaau' ],
+                            'or',
+                            [ 'Products/name', 'eq', 'ru' ],
+                            { orderby => 'customer_id' });
+
+    $t_ids=join(",",@$ids);
+    $self->assert($t_ids eq 'c2,c3',
+                  "Wrong search results for multi-branch search (got '$t_ids', expect 'c2,c3')");
+
+    $ids=$customers->search([ 'Orders/name', 'eq', 'foo' ],
+                            'and',
+                            [ 'Products/name', 'eq', 'bar' ]);
+
+    $t_ids=join(",",@$ids);
+    $self->assert($t_ids eq 'c1,screw',
+                  "Wrong search results for multi-branch search (got '$t_ids', expect 'c1,screw')");
 }
 
 1;

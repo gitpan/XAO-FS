@@ -29,12 +29,13 @@ package XAO::DO::FS::Glue::MySQL_DBI;
 use strict;
 use XAO::Utils qw(:debug :args :keys);
 use XAO::Objects;
-use XAO::Errors qw(XAO::DO::FS::Glue::MySQL_DBI);
 use DBI;
 use DBD::mysql;
 
+use base XAO::Objects->load(objname => 'Atom');
+
 use vars qw($VERSION);
-($VERSION)=(q$Id: MySQL_DBI.pm,v 1.6 2002/01/04 01:48:40 am Exp $ =~ /(\d+\.\d+)/);
+($VERSION)=(q$Id: MySQL_DBI.pm,v 1.9 2002/03/19 03:37:08 am Exp $ =~ /(\d+\.\d+)/);
 
 ###############################################################################
 
@@ -55,33 +56,22 @@ Example:
 sub new ($%) {
     my $proto=shift;
     my $args=get_args(\@_);
-    my $class=ref($proto) || $proto;
 
-    ##
-    # Our object
-    #
-    my $user=$args->{user};
-    my $password=$args->{password};
-    my $dsn=$args->{dsn};
-    my $self={
-        class => $class,
-        objname => $args->{objname},
-        dsn => $dsn,
-        user => $user,
-        password => $password
-    };
-    bless $self, $class;
+    my $self=$proto->SUPER::new($args);
 
     ##
     # Connecting to the database
     #
+    my $user=$args->{user};
+    my $password=$args->{password};
+    my $dsn=$args->{dsn};
     $dsn || $self->throw("new - required parameter missed 'dsn'");
     $dsn=~/^OS:(\w+):(\w+)(;.*)?$/ || $self->throw("new - bad format of 'dsn' ($dsn)");
     $1 eq 'MySQL_DBI' || $self->throw("new - driver type is not MySQL_DBI");
     my $dbname=$2;
     my $dbopts=$3 || '';
     my $dbh=DBI->connect("DBI:mysql:$dbname$dbopts",$user,$password) ||
-            $self->throw("new - can't connect to the database ($dsn,$user,$password)");
+            $self->throw("new - can't connect to the database ($dsn,$user,***)");
     $self->{dbh}=$dbh;
     my $v=$dbh->{mysql_serverinfo} || $dbh->{serverinfo};
     if(!$v || $v !~ /^(\d+)\.(\d+)(\.(\d+))?$/ || $1<3 || $2<23) {
@@ -105,14 +95,11 @@ value and then maximum value.
 
 B<Note:> Indexes only work with MySQL 3.23 and later.
 
-B<Note:> Unique modifier has a side effect of making that field NOT
-NULL.
-
 =cut
 
 sub add_field_integer ($$$$$) {
     my $self=shift;
-    my ($table,$name,$index,$unique,$min,$max)=@_;
+    my ($table,$name,$index,$unique,$min,$max,$connected)=@_;
     $name.='_';
 
     $min=-0x80000000 unless defined $min;
@@ -151,16 +138,25 @@ sub add_field_integer ($$$$$) {
         }
     }
 
-    $sql.=' NOT NULL' if $unique;
+    $sql.=' NOT NULL' if $self->{no_null_indexes};
 
     $sql="ALTER TABLE $table ADD $name $sql";
 
     $self->{dbh}->do($sql) || $self->throw_sql('add_field_integer');
 
-    if($index && ($unique || !$self->{no_null_indexes})) {
+    if(($index || $unique) && (!$unique || !$connected)) {
         my $usql=$unique ? " UNIQUE" : "";
-        $self->{dbh}->do("ALTER TABLE $table ADD$usql INDEX($name)") ||
-            $self->throw_sql('add_field_integer');
+        $sql="ALTER TABLE $table ADD$usql INDEX fsi__$name ($name)";
+        #dprint ">>>$sql<<<";
+        $self->{dbh}->do($sql) ||
+            $self->throw_sql('add_field_text');
+    }
+
+    if($unique && $connected) {
+        $sql="ALTER TABLE $table ADD UNIQUE INDEX fsu__$name (parent_unique_id_,$name)";
+        #dprint ">>>$sql<<<";
+        $self->{dbh}->do($sql) ||
+            $self->throw_sql('add_field_text');
     }
 }
 
@@ -174,48 +170,55 @@ minimal value and then optional maximum value.
 
 B<Note:> Indexes only work with MySQL 3.23 and later.
 
-B<Note:> Unique modifier has a side effect of making that field NOT
-NULL.
-
 =cut
 
 sub add_field_real ($$$;$$) {
     my $self=shift;
-    my ($table,$name,$index,$unique,$min,$max)=@_;
+    my ($table,$name,$index,$unique,$min,$max,$connected)=@_;
     $name.='_';
 
     my $sql="ALTER TABLE $table ADD $name DOUBLE";
-    $sql.=' NOT NULL' if $unique;
+
+    $sql.=' NOT NULL' if $self->{no_null_indexes};
 
     $self->{dbh}->do($sql) || $self->throw_sql('add_field_real');
 
-    if($index && ($unique || !$self->{no_null_indexes})) {
+    if(($index || $unique) && (!$unique || !$connected)) {
         my $usql=$unique ? " UNIQUE" : "";
-        $self->{dbh}->do("ALTER TABLE $table ADD$usql INDEX($name)") ||
-            $self->throw_sql('add_field_real');
+        $sql="ALTER TABLE $table ADD$usql INDEX fsi__$name ($name)";
+        #dprint ">>>$sql<<<";
+        $self->{dbh}->do($sql) ||
+            $self->throw_sql('add_field_text');
+    }
+
+    if($unique && $connected) {
+        $sql="ALTER TABLE $table ADD UNIQUE INDEX fsu__$name (parent_unique_id_,$name)";
+        #dprint ">>>$sql<<<";
+        $self->{dbh}->do($sql) ||
+            $self->throw_sql('add_field_text');
     }
 }
 
 ###############################################################################
 
-=item add_field_text ($$$$)
+=item add_field_text ($$$$$)
 
 Adds new text field to the given table. First is table name, then field
-name, then index flag, then unique flag and then maximum
-length. Depending on maximum length it will create CHAR, TEXT,
-MEDIUMTEXT or LONGTEXT.
+name, then index flag, then unique flag, maximum length and 'connected'
+flag. Depending on maximum length it will create CHAR, TEXT, MEDIUMTEXT
+or LONGTEXT.
 
-B<Note:> Indexes only work with MySQL 3.23 and later.
+'Connected' flag must be set if that table holds elements deeper into
+the tree then the top level.
 
-B<Note:> Unique modifier has a side effect of making that field NOT
-NULL. In most of the cases that means that you can only add it on empty
-table.
+B<Note:> Modifiers 'index' and 'unique' only work with MySQL 3.23 and
+later.
 
 =cut
 
-sub add_field_text ($$$$$) {
+sub add_field_text ($$$$$$) {
     my $self=shift;
-    my ($table,$name,$index,$unique,$max)=@_;
+    my ($table,$name,$index,$unique,$max,$connected)=@_;
     $name.='_';
 
     my $sql;
@@ -229,14 +232,30 @@ sub add_field_text ($$$$$) {
         $sql="LONGTEXT";
     }
 
-    $sql.=' NOT NULL' if $unique;
+    $sql.=' NOT NULL' if $self->{no_null_indexes};
+
+    #dprint ">>ALTER TABLE $table ADD $name $sql<<";
 
     $self->{dbh}->do("ALTER TABLE $table ADD $name $sql") ||
-        $self->throw_sql('add_field_text');
+        throw_sql $self 'add_field_text';
 
-    if($index && $max<255 && ($unique || !$self->{no_null_indexes})) {
+    !$unique || $max<=255 ||
+        throw $self "add_field_text - property is too long to make it unique ($max)";
+    !$index || $max<=255 ||
+        throw $self "add_field_text - property is too long for an index ($max)";
+
+    if(($index || $unique) && (!$unique || !$connected)) {
         my $usql=$unique ? " UNIQUE" : "";
-        $self->{dbh}->do("ALTER TABLE $table ADD$usql INDEX($name)") ||
+        $sql="ALTER TABLE $table ADD$usql INDEX fsi__$name ($name)";
+        #dprint ">>>$sql<<<";
+        $self->{dbh}->do($sql) ||
+            $self->throw_sql('add_field_text');
+    }
+
+    if($unique && $connected) {
+        $sql="ALTER TABLE $table ADD UNIQUE INDEX fsu__$name (parent_unique_id_,$name)";
+        #dprint ">>>$sql<<<";
+        $self->{dbh}->do($sql) ||
             $self->throw_sql('add_field_text');
     }
 }
@@ -306,20 +325,38 @@ sub disconnect ($) {
 
 ###############################################################################
 
-=item drop_field ($$)
+=item drop_field ($$$$$)
 
 Drops the given field from the given table in the database. Whatever
 content was in that field is lost irrevocably.
 
+If index, unique and connected flags are given then it first will drop
+the appropriate index.
+
 =cut
 
-sub drop_field ($$$) {
+sub drop_field ($$$$$$) {
     my $self=shift;
-    my ($table,$name)=@_;
+    my ($table,$name,$index,$unique,$connected)=@_;
+
     $name.='_';
 
-    my $sth=$self->{dbh}->prepare("ALTER TABLE $table DROP $name");
-    $sth && $sth->execute && $sth->finish || $self->throw_sql('drop_field');
+    if($index && (!$unique || !$connected)) {
+        my $sql="ALTER TABLE $table DROP INDEX fsi__$name";
+        # dprint ">>>$sql<<<";
+        $self->{dbh}->do($sql) ||
+            throw_sql $self 'drop_field';
+    }
+
+    if($unique && $connected) {
+        my $sql="ALTER TABLE $table DROP INDEX fsu__$name";
+        # dprint ">>>$sql<<<";
+        $self->{dbh}->do($sql) ||
+            throw_sql $self 'drop_field';
+    }
+
+    $self->{dbh}->do("ALTER TABLE $table DROP $name") ||
+        throw_sql $self 'drop_field';
 }
 
 ###############################################################################
@@ -341,24 +378,6 @@ sub drop_table ($$) {
 
 ###############################################################################
 
-=item empty_field ($$$)
-
-Removes content of given field in the given table by storing NULL in it.
-
-=cut
-
-sub empty_field ($$$$) {
-    my $self=shift;
-    my ($table,$unique_id,$name)=@_;
-    $name.='_';
-
-    my $sth=$self->{dbh}->prepare("UPDATE $table SET $name=NULL WHERE unique_id=?");
-    $sth && $sth->execute($unique_id) && $sth->finish() ||
-        $self->throw_sql('empty_field');
-}
-
-###############################################################################
-
 =item initialize_database ($)
 
 Removes all data from all tables and creates minimal tables that support
@@ -371,11 +390,11 @@ sub initialize_database ($) {
     my $dbh=$self->{dbh};
 
     my $sth=$dbh->prepare('SHOW TABLES');
-    $sth && $sth->execute() || $self->throw_sql('initialize_database');
+    $sth && $sth->execute() || throw_sql $self 'initialize_database';
     my %tables;
     while(my ($table)=$sth->fetchrow_array()) {
         $tables{$table}=1;
-        $dbh->do("DROP TABLE $table") || $self->throw_sql('initialize_database');
+        $dbh->do("DROP TABLE $table") || throw_sql $self 'initialize_database';
     }
     $sth->finish;
 
@@ -387,8 +406,9 @@ CREATE TABLE Global_Fields (
   field_name_ CHAR(30) NOT NULL default '',
   type_ CHAR(20) NOT NULL default '',
   refers_ CHAR(30) default NULL,
-  maxlength_ INT unsigned default NULL,
   index_ TINYINT default NULL,
+  default_ CHAR(30) default NULL,
+  maxlength_ INT unsigned default NULL,
   maxvalue_ DOUBLE default NULL,
   minvalue_ DOUBLE default NULL,
   PRIMARY KEY  (table_name_,field_name_),
@@ -397,7 +417,7 @@ CREATE TABLE Global_Fields (
 END_OF_SQL
         <<'END_OF_SQL',
 INSERT INTO Global_Fields VALUES (1,'Global_Data','project',
-                                  'text','',40,0,NULL,NULL)
+                                  'text','',0,'',40,NULL,NULL)
 END_OF_SQL
         <<'END_OF_SQL',
 CREATE TABLE Global_Dictionary (
@@ -435,7 +455,7 @@ END_OF_SQL
     );
 
     foreach my $clause (@initseq) {
-        $dbh->do($clause) || $self->throw('initialize_database');
+        $dbh->do($clause) || throw_sql $self 'initialize_database';
     }
 }
 
@@ -492,53 +512,59 @@ sub load_structure ($) {
     #
     my %fields;
     my $dbh=$self->{dbh};
-    my $sth=$dbh->prepare("SELECT table_name_,field_name_,type_,index_," .
-                                 "refers_,maxlength_,minvalue_,maxvalue_" .
+    my $sth=$dbh->prepare("SELECT table_name_,field_name_,type_," .
+                                 "refers_,index_,default_," .
+                                 "maxlength_,minvalue_,maxvalue_" .
                           " FROM Global_Fields");
-    $sth && $sth->execute() || $self->throw("_reload - SQL error");
-    while(my ($table,$field,$type,$index,$refers,$maxlength,
-              $minvalue,$maxvalue)=$sth->fetchrow_array) {
+    $sth && $sth->execute() ||
+        throw_sql $self 'load_structure';
+
+    while(my ($table,$field,$type,
+              $refers,$index,$default,
+              $maxlength,$minvalue,$maxvalue)=$sth->fetchrow_array) {
         my $data;
         if($type eq 'list') {
-            $refers || $self->throw("_reload - no class name at Global_Fields($table,$field,..)");
+            $refers || $self->throw("load_structure - no class name at Global_Fields($table,$field,..)");
             $data={
-                type => $type,
-                class => $refers,
+                type        => $type,
+                class       => $refers,
             };
         }
         elsif($type eq 'key') {
-            $refers || $self->throw("_reload - no class name at Global_Fields($table,$field,..)");
+            $refers || $self->throw("load_structure - no class name at Global_Fields($table,$field,..)");
             $data={
-                type => $type,
-                refers => $refers
+                type        => $type,
+                refers      => $refers
             };
         }
         elsif($type eq 'connector') {
-            $refers || $self->throw("_reload - no class name at Global_Fields($table,$field,..)");
+            $refers || $self->throw("load_structure - no class name at Global_Fields($table,$field,..)");
             $data={
-                type => $type,
-                refers => $refers
+                type        => $type,
+                refers      => $refers
             };
         }
         elsif($type eq 'text' || $type eq 'words') {
             $data={
-                type => $type,
-                maxlength => $maxlength,
-                index => $index ? 1 : 0,
-                unique => $index==2 ? 1 : 0,
+                type        => $type,
+                index       => $index ? 1 : 0,
+                unique      => $index==2 ? 1 : 0,
+                default     => $default,
+                maxlength   => $maxlength,
             };
         }
         elsif($type eq 'real' || $type eq 'integer') {
             $data={
-                type => $type,
-                minvalue => defined($minvalue) ? 0+$minvalue : undef,
-                maxvalue => defined($maxvalue) ? 0+$maxvalue : undef,
-                index => $index ? 1 : 0,
-                unique => $index==2 ? 1 : 0,
+                type        => $type,
+                index       => $index ? 1 : 0,
+                unique      => $index==2 ? 1 : 0,
+                default     => $default,
+                minvalue    => defined($minvalue) ? 0+$minvalue : undef,
+                maxvalue    => defined($maxvalue) ? 0+$maxvalue : undef,
             };
         }
         else {
-            $self->throw("_reload - unknown type ($type) for table=$table, field=$field");
+            $self->throw("load_structure - unknown type ($type) for table=$table, field=$field");
         }
         $fields{$table}->{$field}=$data;
     }
@@ -549,11 +575,11 @@ sub load_structure ($) {
     # descriptions inside of it as well.
     #
     $sth=$dbh->prepare("SELECT class_name_,table_name_ FROM Global_Classes");
-    $sth && $sth->execute() || $self->throw("_reload - SQL error");
+    $sth && $sth->execute() || $self->throw("load_structure - SQL error");
     my %classes;
     while(my ($class,$table)=$sth->fetchrow_array) {
         my $f=$fields{$table};
-        $f || $self->throw("_reload - no description for $table table (class $class)");
+        $f || $self->throw("load_structure - no description for $table table (class $class)");
         $classes{$class}={ table => $table,
                            fields => $f
                          };
@@ -652,9 +678,8 @@ clause.
 sub search_clause_wq ($$$) {
     my $self=shift;
     my ($field,$rha)=@_;
-    $rha=~s/([\\'\[\]])/\\$1/g;
-    $rha=~s/\000/\\0/g;
-    "$field REGEXP '[[:<:]]" . $rha . "[[:>:]]'";
+    $rha=~s/([\\'\[\]\|\{\}\(\)\.\*\?\$\^])/\\$1/g;
+    ("$field REGEXP ?","[[:<:]]" . $rha . "[[:>:]]");
 }
 
 ###############################################################################
@@ -671,8 +696,7 @@ sub search_clause_ws ($$$) {
     my $self=shift;
     my ($field,$rha)=@_;
     $rha=~s/([\\'\[\]])/\\$1/g;
-    $rha=~s/\000/\\0/g;
-    "$field REGEXP '[[:<:]]$rha'";
+    ("$field REGEXP ?","[[:<:]]$rha");
 }
 
 ###############################################################################
@@ -946,13 +970,10 @@ sub unlock_tables ($) {
         die 'unlock_tables - failed';
 }
 
-##
-# Throwing an error
-#
 sub throw ($@) {
     my $self=shift;
     $self->unlock_tables();
-    throw XAO::E::DO::FS::Glue::MySQL_DBI join('',@_);
+    $self->SUPER::throw(@_);
 }
 
 sub throw_sql ($$) {
