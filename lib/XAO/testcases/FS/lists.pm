@@ -1,9 +1,10 @@
-package testcases::lists;
+package XAO::testcases::FS::lists;
 use strict;
+use Error qw(:try);
 use XAO::Utils;
 use XAO::Objects;
 
-use base qw(testcases::base);
+use base qw(XAO::testcases::FS::base);
 
 sub new_cust {
     my $self=shift;
@@ -236,7 +237,7 @@ sub test_list_describe {
     $self->assert($list, "Can't fetch List object");
     
     $self->assert(defined($list->can('describe')),
-                  "Can't call function 'describe()' on Data::System::List object!");
+                  "Can't call function 'describe()' on the List object");
 
     my $desc=$list->describe();
     $self->assert(ref($desc) eq 'HASH',
@@ -247,6 +248,32 @@ sub test_list_describe {
                   "Class of Customers is not 'Data::Customer'");
     $self->assert($desc->{key} => 'customer_id',
                   "Key for Customers is not 'customer_id'");
+}
+
+sub test_wrong_name {
+    my $self=shift;
+
+    my $odb = $self->{odb};
+    my $list=$odb->fetch('/Customers');
+    $self->assert($list, "Can't fetch List object");
+    
+    my $c=$list->get_new;
+
+    my $flag=0;
+    try {
+        $list->put('123-456+789' => $c);
+        $flag++;
+        $list->put('123.456#789' => $c);
+        $flag++;
+        $list->put('123@456/789' => $c);
+        $flag++;
+    }
+    otherwise {
+        $flag=0;
+    };
+
+    $self->assert($flag == 0,
+                  "Succeeded in storing under wrong name (flag=$flag)");
 }
 
 1;

@@ -20,7 +20,7 @@ METHODS
         Example:
 
          my $driver=XAO::Objects->new(objname => 'FS::Glue::MySQL',
-                                      dsn => 'DBI:MySQL_DBI:dbname',
+                                      dsn => 'OS:MySQL_DBI:dbname',
                                       user => 'username',
                                       password => '123123123');
 
@@ -77,6 +77,9 @@ METHODS
         Increments the value of key_seq in Global_Fields table identified by
         the given row unique ID. Returns previous value.
 
+        Note: Always executed as a part of some outer level transaction.
+        Does not create any locks or starts transactions.
+
     initialize_database ($)
         Removes all data from all tables and creates minimal tables that
         support objects database.
@@ -100,6 +103,10 @@ METHODS
         Adds underscore to the end of field name to avoid problems with
         reserved words. Could do something else in other drivers, do not
         count on the fact that there would be underscore at the end.
+
+    reset ()
+        Brings driver to usable state. Unlocks tables if they were somehow
+        left in locked state.
 
     retrieve_fields ($$$@)
         Retrieves individual fields from the given table by unique ID of the
@@ -139,17 +146,30 @@ METHODS
         Looks up row unique ID by given key name and value (required) and
         connector name and value (optional for top level lists).
 
-    update_field ($$$$) {
-        Stores new value into single data field. Example:
+    update_fields ($$$;$) {
+        Stores new values. Example:
 
-         $self->_driver->update_field($table,$unique_id,$name,$value);
+         $self->_driver->update_field($table,$unique_id,{ name => 'value' });
 
-    update_row ($$$$)
-        Updates multiple fields in the row by unique id and table.
+        Optional last argument can be used to disable transactional wrapping
+        if set to a non-zero value.
 
-        Example:
+    tr_loc_active ()
+        Checks if we currently have active local or external transaction.
 
-         $self->_driver->update_row($table,$unique_id,\%row);
+    tr_loc_begin ()
+        Starts new local transaction. Will only really start it if we do not
+        have currently active external transaction. Does nothing for MyISAM.
+
+    tr_loc_commit ()
+        Commits changes for local transaction if it is active.
+
+    tr_loc_rollback ()
+        Rolls back changes for local transaction if it is active. Called
+        automatically on errors.
+
+    tr_ext_active ()
+        Checks if an external transaction is currently active.
 
 AUTHORS
     Copyright (c) 2001,2002 XAO, Inc.

@@ -1,3 +1,21 @@
+1.05 - 12-Nov-2003
+    * SPEEDUP: significantly faster list deletes
+    * BUGFIX: same name top level lists were affected by recursive
+      drop_placeholder() in memory
+    * BUGFIX: collections allowed to retrieve non-existing objects
+    * key_length added to list placeholders making it possible to have
+      key lengths from 1 to 255 for lists
+    * a bug in MySQL_DBI treatment of 'distinct' option fixed
+    * transact_*() methods and driver support for InnoDB
+    * glue() method added to all Hash, List and Collection
+    * Hash::collection_key() method added
+    * fetch() can now fetch collections using
+      xaofs://collection/class/Data::Product/ syntax
+    * describe() method implemented for collections
+    * minor bug in Collection fixed
+    * name restrictions are now enforced in List according to
+      documentation
+
 1.04 - 1-Nov-2002
     * Flexible auto-generated IDs in Lists (including sequential)
     * Better treatment of default values and null/undefs

@@ -81,6 +81,7 @@ my %man3pods;
 foreach my $n (keys %{ExtUtils::Manifest::maniread()}) {
     next unless $n =~ '^(FS).pm$' ||
                 $n =~ '^lib/XAO/(.*)\.(pm|pod)$';
+    next if $n =~/\/testcases\//;
     my $man=$1;
     $man=~s/\/+/::/g;
     $man='XAO::' . $man;
@@ -106,10 +107,10 @@ WriteMakefile(
     'PREREQ_PM'     => { 
         'DBD::mysql'    => '2.0414',
         'DBI'           => '1.13',
-        'Error'         => '0.14',
+        'Error'         => '0.15',
         'Pod::Usage'    => '1.12',
-        'Test::Unit'    => '0.14',
-        'XAO::Base'     => '1.04',
+        'Test::Unit'    => '0.15',
+        'XAO::Base'     => '1.05',
     },
     'EXE_FILES'     => [
         'scripts/xao-fs',
@@ -126,21 +127,21 @@ all-doc:   doc/design.txt doc/x-list.txt doc/x-hash.txt \\
 	doc/x-mysql-dbi.txt
 
 doc/design.txt:    FS.pm
-	\@pod2text FS.pm > doc/design.txt
+	\@COLUMNS=80 pod2text FS.pm > doc/design.txt
 
 doc/x-list.txt:    lib/XAO/DO/FS/List.pm
-	\@pod2text lib/XAO/DO/FS/List.pm > doc/x-list.txt
+	\@COLUMNS=80 pod2text lib/XAO/DO/FS/List.pm > doc/x-list.txt
 
 doc/x-collection.txt:    lib/XAO/DO/FS/Collection.pm
-	\@pod2text lib/XAO/DO/FS/Collection.pm > doc/x-collection.txt
+	\@COLUMNS=80 pod2text lib/XAO/DO/FS/Collection.pm > doc/x-collection.txt
 
 doc/x-hash.txt:    lib/XAO/DO/FS/Hash.pm
-	\@pod2text lib/XAO/DO/FS/Hash.pm > doc/x-hash.txt
+	\@COLUMNS=80 pod2text lib/XAO/DO/FS/Hash.pm > doc/x-hash.txt
 
 doc/x-glue.txt:    lib/XAO/DO/FS/Glue.pm
-	\@pod2text lib/XAO/DO/FS/Glue.pm > doc/x-glue.txt
+	\@COLUMNS=80 pod2text lib/XAO/DO/FS/Glue.pm > doc/x-glue.txt
 
 doc/x-mysql-dbi.txt:    lib/XAO/DO/FS/Glue/MySQL_DBI.pm
-	\@pod2text lib/XAO/DO/FS/Glue/MySQL_DBI.pm > doc/x-mysql-dbi.txt
+	\@COLUMNS=80 pod2text lib/XAO/DO/FS/Glue/MySQL_DBI.pm > doc/x-mysql-dbi.txt
 EOT
 }

@@ -1,18 +1,53 @@
-package testcases::basic;
+package XAO::testcases::FS::basic;
 use strict;
 use XAO::Utils;
 use XAO::Objects;
 use Error qw(:try);
 
-use base qw(testcases::base);
+use base qw(XAO::testcases::FS::base);
 
-sub test_connect {
+sub test_xaofs {
     my $self=shift;
 
     my $odb=$self->{odb};
-
     $self->assert(defined($odb) && ref($odb),
                   'Object database creating failure');
+
+    my %matrix=(
+        t1 => {
+            path    => '/Customers/c2/name',
+            result  => 'Test Customer #2',
+        },
+        t2 => {
+            path    => 'xaofs://uri/Customers/c2/name',
+            result  => 'Test Customer #2',
+        },
+        t3 => {
+            path    => 'xaofs://collection/class/Data::Customer/2/name',
+            result  => 'Test Customer #2',
+        },
+        t4 => {
+            path    => 'xaofs://collection/class/Data::Customer',
+            result  => 'XAO::DO::FS::Collection',
+        },
+        t5 => {
+            path    => 'xaofs://collection/class/Data::Customer/',
+            result  => 'XAO::DO::FS::Collection',
+        },
+        t6 => {
+            path    => 'xaofs://uri/Customers',
+            result  => 'XAO::DO::FS::List',
+        },
+    );
+
+    foreach my $test (values %matrix) {
+        my $path=$test->{path};
+
+        my $got=$odb->fetch($path);
+        my $expect=$test->{result};
+        $self->assert((ref($got) || $got) eq $expect,
+                      "Expected '$expect', got '$got'");
+    }
 }
 
 sub test_objtype {

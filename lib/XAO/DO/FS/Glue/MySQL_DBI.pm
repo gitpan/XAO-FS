@@ -31,7 +31,7 @@ use XAO::Objects;
 use base XAO::Objects->load(objname => 'FS::Glue::SQL_DBI');
 
 use vars qw($VERSION);
-($VERSION)=(q$Id: MySQL_DBI.pm,v 1.15 2002/10/29 09:23:59 am Exp $ =~ /(\d+\.\d+)/);
+($VERSION)=(q$Id: MySQL_DBI.pm,v 1.22 2003/07/31 02:08:10 am Exp $ =~ /(\d+\.\d+)/);
 
 ###############################################################################
 
@@ -43,7 +43,7 @@ DSN, user and password.
 Example:
 
  my $driver=XAO::Objects->new(objname => 'FS::Glue::MySQL',
-                              dsn => 'DBI:MySQL_DBI:dbname',
+                              dsn => 'OS:MySQL_DBI:dbname',
                               user => 'username',
                               password => '123123123');
 
@@ -60,7 +60,22 @@ sub new ($%) {
     $dsn=~/^OS:(\w+):(\w+)(;.*)?$/ || $self->throw("new - bad format of 'dsn' ($dsn)");
     my $driver=$1;
     my $dbname=$2;
-    my $dbopts=$3 || '';
+    my $options=$3 || '';
+
+    ##
+    # Parsing dbopts, separating what we know about from what is passed
+    # directly to the driver.
+    #
+    my $dbopts='';
+    foreach my $pair (split(/[,;]/,$options)) {
+        next unless length($pair);
+        if($pair =~ /^table_type\s*=\s*(.*?)\s*$/) {
+            $self->{table_type}=lc($1);
+        }
+        else {
+            $dbopts.=';' . $pair;
+        }
+    }
 
     $driver =~ '^MySQL' ||
         throw $self "new - wrong driver type ($driver)";
@@ -88,6 +103,10 @@ sub add_field_integer ($$$$$) {
     my $self=shift;
     my ($table,$name,$index,$unique,$min,$max,$default,$connected)=@_;
     $name.='_';
+
+    if($self->tr_loc_active || $self->tr_ext_active) {
+        throw $self "add_field_integer - modifying structure in transaction scope is not supported";
+    }
 
     $min=-0x80000000 unless defined $min;
     $min=int($min);
@@ -162,6 +181,10 @@ sub add_field_real ($$$;$$) {
     my ($table,$name,$index,$unique,$min,$max,$default,$connected)=@_;
     $name.='_';
 
+    if($self->tr_loc_active || $self->tr_ext_active) {
+        throw $self "add_field_real - modifying structure in transaction scope is not supported";
+    }
+
     my $sql="ALTER TABLE $table ADD $name DOUBLE NOT NULL DEFAULT $default";
 
     $self->sql_do($sql);
@@ -201,6 +224,10 @@ sub add_field_text ($$$$$$) {
     my $self=shift;
     my ($table,$name,$index,$unique,$max,$default,$connected)=@_;
     $name.='_';
+
+    if($self->tr_loc_active || $self->tr_ext_active) {
+        throw $self "add_field_text - modifying structure in transaction scope is not supported";
+    }
 
     my $sql;
     if($max<255) {
@@ -244,20 +271,27 @@ fields.
 
 =cut
 
-sub add_table ($$$$) {
+sub add_table ($$$$$) {
     my $self=shift;
-    my ($table,$key,$connector)=@_;
+    my ($table,$key,$key_length,$connector)=@_;
     $key.='_';
     $connector.='_' if $connector;
 
+    if($self->tr_loc_active || $self->tr_ext_active) {
+        throw $self "add_table - modifying structure in transaction scope is not supported";
+    }
+
     my $sql="CREATE TABLE $table (" . 
             " unique_id INT UNSIGNED AUTO_INCREMENT NOT NULL PRIMARY KEY," .
-            " $key CHAR(30) NOT NULL," .
+            " $key CHAR($key_length) NOT NULL," .
             " INDEX $key($key)" .
             (defined($connector) ? ", $connector INT UNSIGNED NOT NULL" .
                                    ", INDEX $connector($connector)"
                                  : "") .
             ")";
+
+    $sql.=" TYPE=$self->{table_type}"
+        if $self->{table_type} && $self->{table_type} ne 'mixed';
 
     $self->sql_do($sql);
 }
@@ -274,7 +308,9 @@ sub delete_row ($$$) {
     my $self=shift;
     my ($table,$uid)=@_;
 
+    $self->tr_loc_begin;
     $self->sql_do("DELETE FROM $table WHERE unique_id=?",$uid);
+    $self->tr_loc_commit;
 }
 
 ###############################################################################
@@ -287,7 +323,15 @@ will do that for you.
 =cut
 
 sub disconnect ($) {
-    shift->sql_disconnect;
+    my $self=shift;
+    if($self->{table_type} eq 'innodb') {
+        $self->tr_ext_rollback if $self->tr_ext_active;
+        $self->tr_loc_rollback if $self->tr_loc_active;
+    }
+    else {
+        $self->unlock_tables;
+    }
+    $self->sql_disconnect;
 }
 
 ###############################################################################
@@ -305,6 +349,10 @@ the appropriate index.
 sub drop_field ($$$$$$) {
     my $self=shift;
     my ($table,$name,$index,$unique,$connected)=@_;
+
+    if($self->tr_loc_active || $self->tr_ext_active) {
+        throw $self "drop_field - modifying structure in transaction scope is not supported";
+    }
 
     $name.='_';
 
@@ -336,6 +384,10 @@ sub drop_table ($$) {
     my $self=shift;
     my $table=shift;
 
+    if($self->tr_loc_active || $self->tr_ext_active) {
+        throw $self "drop_table - modifying structure in transaction scope is not supported";
+    }
+
     $self->sql_do("DROP TABLE $table");
 }
 
@@ -346,22 +398,26 @@ sub drop_table ($$) {
 Increments the value of key_seq in Global_Fields table identified by the
 given row unique ID. Returns previous value.
 
+B<Note:> Always executed as a part of some outer level transaction. Does
+not create any locks or starts transactions.
+
 =cut
 
 sub increment_key_seq ($$) {
     my $self=shift;
     my $uid=shift;
 
+    $self->sql_do('UPDATE Global_Fields SET key_seq_=key_seq_+1 WHERE unique_id=?',$uid);
+
     my $sth=$self->sql_execute('SELECT key_seq_ FROM Global_Fields WHERE unique_id=?',$uid);
     my $seq=$self->sql_first_row($sth)->[0];
-    if(!$seq) {
-        $self->sql_do('UPDATE Global_Fields SET key_seq_=2 WHERE unique_id=?',$uid);
-        return 1;
-    }
-    else {
+    if($seq==1) {
         $self->sql_do('UPDATE Global_Fields SET key_seq_=key_seq_+1 WHERE unique_id=?',$uid);
-        return $seq;
+        $sth=$self->sql_execute('SELECT key_seq_ FROM Global_Fields WHERE unique_id=?',$uid);
+        $seq=$self->sql_first_row($sth)->[0];
     }
+
+    return $seq-1;
 }
 
 ###############################################################################
@@ -376,9 +432,16 @@ objects database.
 sub initialize_database ($) {
     my $self=shift;
 
-    my $sth=$self->sql_execute('SHOW TABLES');
+    if($self->tr_loc_active || $self->tr_ext_active) {
+        throw $self "initialize_database - modifying structure in transaction scope is not supported";
+    }
+
+    my $sth=$self->sql_execute('SHOW TABLE STATUS');
+    my $table_type=$self->{table_type};
     while(my $row=$self->sql_fetch_row($sth)) {
-        $self->sql_do("DROP TABLE $row->[0]");
+        my ($name,$type)=@$row;
+        $table_type||=lc($type);
+        $self->sql_do("DROP TABLE $name");
     }
     $self->sql_finish($sth);
 
@@ -429,8 +492,9 @@ INSERT INTO Global_Classes VALUES (1,'FS::Global','Global_Data')
 END_OF_SQL
     );
 
-    foreach my $clause (@initseq) {
-        $self->sql_do($clause);
+    foreach my $sql (@initseq) {
+        $sql.=" TYPE=$table_type" if $table_type && $sql =~ /^CREATE/;
+        $self->sql_do($sql);
     }
 }
 
@@ -479,12 +543,56 @@ and store them would do the job?
 
 sub load_structure ($) {
     my $self=shift;
+    if($self->tr_loc_active || $self->tr_ext_active) {
+        throw $self "load_structure - modifying structure in transaction scope is not supported";
+    }
+
+    ##
+    # Checking table types.
+    #
+    my $sth=$self->sql_execute("SHOW TABLE STATUS");
+    my %table_status;
+    my %type_counts;
+    my $table_count=0;
+    while(my $row=$self->sql_fetch_row($sth)) {
+        my ($name,$type,$row_format,$rows)=@$row;
+        $type=lc($type);
+        $type_counts{$type}++;
+        $table_status{$name}=$type;
+        $table_count++;
+        # dprint "Table '$name', type=$type, row_format=$row_format, rows=$rows";
+    }
+    if($self->{table_type}) {
+        my $table_type=$self->{table_type};
+        if($table_type eq 'innodb' || $table_type eq 'myisam') {
+            foreach my $table_name (keys %table_status) {
+                next if $table_status{$table_name} eq $table_type;
+                dprint "Converting table '$table_name' type from '$table_status{$table_name}' to '$table_type'";
+                $self->sql_do("ALTER TABLE $table_name TYPE=$table_type");
+            }
+        }
+        else {
+            throw $self "Unsupported table_type '$table_type' in DSN options";
+        }
+    }
+    elsif($type_counts{innodb} && $type_counts{innodb}==$table_count) {
+        $self->{table_type}='innodb';
+    }
+    elsif($type_counts{myisam} && $type_counts{myisam}==$table_count) {
+        $self->{table_type}='myisam';
+    }
+    else {
+        $self->{table_type}='mixed';
+        eprint "You have mixed table types in the database (" .
+               join(',',map { $_ . '=' . $table_status{$_} } sort keys %table_status) . 
+               ")";
+    }
 
     ##
     # Checking if Global_Fields table has key_format_ and key_seq_
     # fields. Adding them if it does not.
     #
-    my $sth=$self->sql_execute("DESC Global_Fields");
+    $sth=$self->sql_execute("DESC Global_Fields");
     my $flist=$self->sql_first_column($sth);
     if(! grep { $_ eq 'key_format_' } @$flist) {
         $self->sql_do('ALTER TABLE Global_Fields ADD key_format_ CHAR(100) DEFAULT NULL');
@@ -497,6 +605,8 @@ sub load_structure ($) {
     # Loading fields descriptions from the database.
     #
     my %fields;
+    my %tkeys;
+    my %ckeys;
     $sth=$self->sql_execute("SELECT unique_id,table_name_,field_name_," .
                                    "type_,refers_,key_format_," .
                                    "index_,default_," .
@@ -513,15 +623,18 @@ sub load_structure ($) {
                 type        => $type,
                 class       => $refers,
             };
+            $ckeys{$refers}=$field;
         }
         elsif($type eq 'key') {
             $refers || $self->throw("load_structure - no class name at Global_Fields($table,$field,..)");
             $data={
                 type        => $type,
                 refers      => $refers,
-                key_format  => $key_format,
+                key_format  => $key_format || '<$RANDOM$>',
                 key_unique_id => $uid,
+                key_length  => $maxlength || 30,
             };
+            $tkeys{$table}=$field;
         }
         elsif($type eq 'connector') {
             $refers || $self->throw("load_structure - no class name at Global_Fields($table,$field,..)");
@@ -574,6 +687,20 @@ sub load_structure ($) {
     $self->sql_finish($sth);
 
     ##
+    # Copying key related stuff to list description which is very
+    # helpful for build_structure
+    #
+    foreach my $class (keys %ckeys) {
+        my $upper_key_name=$ckeys{$class};
+        my ($data,$table)=@{$classes{$class}}{'fields','table'};
+        my $key_name=$tkeys{$table};
+        my $key_data=$data->{$key_name};
+        my $upper_data=$classes{$key_data->{refers}}->{fields}->{$upper_key_name};
+        @{$upper_data}{qw(key key_format key_length)}=
+            ($key_name,@{$key_data}{qw(key_format key_length)});
+    }
+
+    ##
     # Resulting structure
     #
     \%classes;
@@ -597,6 +724,25 @@ sub mangle_field_name ($$) {
 
 ###############################################################################
 
+=item reset ()
+
+Brings driver to usable state. Unlocks tables if they were somehow left
+in locked state.
+
+=cut
+
+sub reset () {
+    my $self=shift;
+    if($self->{table_type} eq 'innodb') {
+        $self->tr_loc_rollback();
+    }
+    else {
+        $self->unlock_tables();
+    }
+}
+
+###############################################################################
+
 =item retrieve_fields ($$$@)
 
 Retrieves individual fields from the given table by unique ID of the
@@ -610,7 +756,8 @@ sub retrieve_fields ($$$@) {
     my $table=shift;
     my $unique_id=shift;
 
-    $unique_id || $self->throw("retrieve_field($table,...) - no unique_id given");
+    $unique_id ||
+        $self->throw("retrieve_field($table,...) - no unique_id given");
 
     my @names=map { $_ . '_' } @_;
 
@@ -647,8 +794,13 @@ sub search ($%) {
 
     if(scalar(@{$query->{fields_list}})>1) {
         my @results;
+
+        ##
+        # We need to copy the array we get here to avoid replicating the
+        # last row into all rows by using reference to the same array.
+        #
         while(my $row=$self->sql_fetch_row($sth)) {
-            push @results,$row;
+            push @results,[ @$row ];
         }
         $self->sql_finish($sth);
         return \@results;
@@ -719,11 +871,19 @@ sub store_row ($$$$$$$) {
     $conn_name.='_' if $conn_name;
 
     ##
-    # We need to lock Global_Fields too as it might be used in AUTOINC
-    # key formats.
+    # If we have no transaction support we need to lock Global_Fields
+    # too as it might be used in AUTOINC key formats.
     #
-    my @ltab=$table eq 'Global_Fields' ? ('Global_Fields') : ($table,'Global_Fields');
-    $self->lock_tables(@ltab);
+    my @ltab;
+    if($self->{table_type} eq 'innodb') {
+        #dprint "store_row: transaction begin";
+        $self->tr_loc_begin;
+    }
+    else {
+        #dprint "store_row: locking tables";
+        @ltab=$table eq 'Global_Fields' ? ('Global_Fields') : ($table,'Global_Fields');
+        $self->lock_tables(@ltab);
+    }
 
     my $uid;
     if(ref($key_value) eq 'CODE') {
@@ -748,7 +908,9 @@ sub store_row ($$$$$$$) {
     }
     
     if($uid) {
-        $self->update_row($table,$uid,$row);
+        # Needs to be split into local version that is called from
+        # underneath transactional cover and "public" one.
+        $self->update_fields($table,$uid,$row,0);
     }
     else {
         my @fn=($key_name, map { $_.'_' } keys %{$row});
@@ -767,7 +929,14 @@ sub store_row ($$$$$$$) {
         $self->sql_do($sql,\@fv);
     }
 
-    $self->unlock_tables(@ltab);
+    if($self->{table_type} eq 'innodb') {
+        #dprint "store_row: commit()";
+        $self->tr_loc_commit;
+    }
+    else {
+        #dprint "store_row: unlock_tables()";
+        $self->unlock_tables(@ltab);
+    }
 
     $key_value;
 }
@@ -803,53 +972,165 @@ sub unique_id ($$$$$$$) {
 
 ###############################################################################
 
-=item update_field ($$$$) {
+=item update_fields ($$$;$) {
 
-Stores new value into single data field. Example:
+Stores new values. Example:
 
- $self->_driver->update_field($table,$unique_id,$name,$value);
+ $self->_driver->update_field($table,$unique_id,{ name => 'value' });
+
+Optional last argument can be used to disable transactional wrapping if
+set to a non-zero value.
 
 =cut
 
-sub update_field ($$$$$) {
-    my $self=shift;
-    my ($table,$unique_id,$name,$value)=@_;
+sub update_fields ($$$$;$) {
+    my ($self,$table,$unique_id,$data,$internal)=@_;
 
     $unique_id ||
-        throw $self "update_field($table,..,$name,..) - no unique_id given";
+        throw $self "update_field($table,..) - no unique_id given";
 
-    $name.='_';
+    my @names=keys %$data;
+    return unless @names;
 
-    defined($value) ||
-        throw $self "update_field($table,..,$name,..) - undefined value given";
+    my $sql="UPDATE $table SET ";
+    $sql.=join(',',map { "${_}_=?" } @names);
+    $sql.=' WHERE unique_id=?';
 
-    $self->sql_do("UPDATE $table SET $name=? WHERE unique_id=?",
-                  ''.$value,$unique_id);
+    if(!$internal && $self->{table_type} eq 'innodb') {
+        #dprint "store_row: transaction begin";
+        $self->tr_loc_begin;
+    }
+
+    $self->sql_do($sql,values %$data,$unique_id);
+
+    if(!$internal && $self->{table_type} eq 'innodb') {
+        #dprint "store_row: transaction commit";
+        $self->tr_loc_commit;
+    }
 }
 
 ###############################################################################
 
-=item update_row ($$$$)
+=item tr_loc_active ()
 
-Updates multiple fields in the row by unique id and table.
-
-Example:
-
- $self->_driver->update_row($table,$unique_id,\%row);
+Checks if we currently have active local or external transaction.
 
 =cut
 
-sub update_row ($$$$) {
+sub tr_loc_active ($) {
     my $self=shift;
-    my ($table,$uid,$row)=@_;
+    return $self->{tr_loc_active} || $self->{tr_ext_active};
+}
 
-    return unless keys %$row;
+###############################################################################
 
-    my $sql="UPDATE $table SET ";
-    $sql.=join(',',map { "${_}_=?" } keys %{$row});
-    $sql.=' WHERE unique_id=?';
+=item tr_loc_begin ()
 
-    my $sth=$self->sql_do($sql,values %$row,$uid);
+Starts new local transaction. Will only really start it if we do not
+have currently active external transaction. Does nothing for MyISAM.
+
+=cut
+
+sub tr_loc_begin ($) {
+    my $self=shift;
+    return if $self->{table_type} ne 'innodb' ||
+              $self->{tr_ext_active} ||
+              $self->{tr_loc_active};
+    $self->sql_do('START TRANSACTION');
+    $self->{tr_loc_active}=1;
+}
+
+###############################################################################
+
+=item tr_loc_commit ()
+
+Commits changes for local transaction if it is active.
+
+=cut
+
+sub tr_loc_commit ($) {
+    my $self=shift;
+    return unless $self->{tr_loc_active};
+    $self->sql_do('COMMIT');
+    $self->{tr_loc_active}=0;
+}
+
+###############################################################################
+
+=item tr_loc_rollback ()
+
+Rolls back changes for local transaction if it is active. Called
+automatically on errors.
+
+=cut
+
+sub tr_loc_rollback ($) {
+    my $self=shift;
+    return unless $self->{tr_loc_active};
+    $self->sql_do('ROLLBACK');
+    $self->{tr_loc_active}=0;
+}
+
+###############################################################################
+
+=item tr_ext_active ()
+
+Checks if an external transaction is currently active.
+
+=cut
+
+sub tr_ext_active ($) {
+    my $self=shift;
+    return $self->{tr_ext_active};
+}
+
+###############################################################################
+
+sub tr_ext_begin ($) {
+    my $self=shift;
+    $self->{tr_ext_active} &&
+        throw $self "tr_ext_begin - attempt to nest transactions";
+    $self->{tr_loc_active} &&
+        throw $self "tr_ext_begin - internal error, still in local transaction";
+    if($self->{table_type} eq 'innodb') {
+        $self->sql_do('START TRANSACTION');
+    }
+    $self->{tr_ext_active}=1;
+}
+
+###############################################################################
+
+sub tr_ext_can ($) {
+    my $self=shift;
+    return $self->{table_type} eq 'innodb' ? 1 : 0;
+}
+
+###############################################################################
+
+sub tr_ext_commit ($) {
+    my $self=shift;
+
+    $self->{tr_ext_active} ||
+        throw $self "tr_ext_commit - no active transaction";
+
+    if($self->{table_type} eq 'innodb') {
+        $self->sql_do('COMMIT');
+    }
+    $self->{tr_ext_active}=0;
+}
+
+###############################################################################
+
+sub tr_ext_rollback ($) {
+    my $self=shift;
+
+    $self->{tr_ext_active} ||
+        throw $self "tr_ext_rollback - no active transaction";
+
+    if($self->{table_type} eq 'innodb') {
+        $self->sql_do('ROLLBACK');
+    }
+    $self->{tr_ext_active}=0;
 }
 
 ###################################################################### PRIVATE
@@ -858,18 +1139,26 @@ sub lock_tables ($@) {
     my $self=shift;
     my $sql='LOCK TABLES ';
     $sql.=join(',',map { "$_ WRITE" } @_);
+    #dprint "lock_tables: sql=$sql";
     $self->sql_do($sql);
 }
 
 sub unlock_tables ($) {
     my $self=shift;
     return unless $self->sql_connected;
+    #dprint "unlock_tables:";
     $self->sql_do_no_error('UNLOCK TABLES');
 }
 
 sub throw ($@) {
     my $self=shift;
-    $self->unlock_tables();
+    if($self->{table_type} eq 'innodb') {
+        $self->tr_loc_rollback();
+    }
+    else {
+        $self->unlock_tables();
+    }
+
     $self->SUPER::throw(@_);
 }
 

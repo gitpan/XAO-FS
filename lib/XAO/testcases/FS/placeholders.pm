@@ -1,10 +1,125 @@
-package testcases::placeholders;
+package XAO::testcases::FS::placeholders;
 use strict;
 use XAO::Utils;
-use Data::Dumper;
 use Error qw(:try);
 
-use base qw(testcases::base);
+use base qw(XAO::testcases::FS::base);
+
+# If we have /Customers/Orders and /Orders and then drop_placeholder on
+# /Customers it also drops /Orders from _MEMORY_, not from the
+# database. Should not do that!
+#
+# AM: 2003-10-09
+#
+sub test_double_drop_20031009 {
+    my $self=shift;
+    my $odb=$self->get_odb();
+
+    my $root=$odb->fetch('/');
+    $root->add_placeholder(
+        name        => 'Orders',
+        type        => 'list',
+        class       => 'Data::Order',
+        key         => 'order_id',
+    );
+
+    $self->assert($root->exists('Orders'),
+                  "Orders was not created");
+
+    my $c1=$root->get('Customers')->get('c1');
+    $c1->add_placeholder(
+        name        => 'Orders',
+        type        => 'list',
+        class       => 'Data::Product',
+        key         => 'order_id',
+    );
+
+    $self->assert($c1->exists('Orders'),
+                  "c1/Orders was not created");
+
+    $root->drop_placeholder('Customers');
+
+    $self->assert(!$root->exists('Customers'),
+                  "Customers exists after drop_placeholder (1)");
+    $self->assert($root->exists('Orders'),
+                  "Orders does not exist, but should");
+
+    $root->add_placeholder(
+        name        => 'Customers',
+        type        => 'list',
+        class       => 'Data::Customer',
+        key         => 'order_id',
+    );
+
+    $self->assert($root->exists('Customers'),
+                  "Customers was not created");
+
+    $root->drop_placeholder('Customers');
+
+    $self->assert(!$root->exists('Customers'),
+                  "Customers exists after drop_placeholder (2)");
+    $self->assert($root->exists('Orders'),
+                  "Orders does not exist, but should");
+
+    $root->drop_placeholder('Orders');
+
+    $self->assert(!$root->exists('Customers'),
+                  "Customers exists after drop_placeholder (3)");
+    $self->assert(!$root->exists('Orders'),
+                  "Orders exists after drop_placeholder");
+}
+
+sub test_key_length {
+    my $self=shift;
+
+    my $odb=$self->get_odb();
+
+    my $customer=$odb->fetch('/Customers/c1');
+    $self->assert(ref($customer),
+                  "Can't fetch /Customers/c1");
+
+    $customer->add_placeholder(
+        name        => 'Orders',
+        type        => 'list',
+        class       => 'Data::Order',
+        key         => 'order_id',
+        key_length  => 40,
+    );
+
+    my $orders=$customer->get('Orders');
+    my $no=$orders->get_new;
+
+    my $kl=$no->describe('order_id')->{key_length};
+    $self->assert($kl == 40,
+                  "Got wrong key length, method 1");
+
+    $kl=$orders->key_length;
+    $self->assert($kl == 40,
+                  "Got wrong key length, method 2");
+
+    $no->add_placeholder(
+        name        => 'name',
+        type        => 'text',
+        maxlength   => 10,
+    );
+
+    my $k1=('Z' x 35) . '11';
+    my $k2=('Z' x 35) . '22';
+
+    $no->put(name => 'k1');
+    $orders->put($k1 => $no);
+
+    $no->put(name => 'k2');
+    $orders->put($k2 => $no);
+
+    my $v1=$orders->get($k1)->get('name');
+    my $v2=$orders->get($k2)->get('name');
+
+    $self->assert($v1 eq 'k1',
+                  "Expected 'k1', got '$v1'");
+    $self->assert($v2 eq 'k2',
+                  "Expected 'k2', got '$v2'");
+}
 
 sub test_same_field_name {
     my $self=shift;
@@ -243,6 +358,10 @@ sub test_build_structure {
             minvalue => 0,
             maxvalue => 100
         },
+        uns => {
+            type => 'integer',
+            minvalue => 0,
+        },
         uq => {
             type => 'real',
             minvalue => 123,
@@ -285,9 +404,18 @@ sub test_build_structure {
     };
     $cust->build_structure(\%structure);
 
-    foreach my $name (qw(newf name text integer Orders)) {
+    foreach my $name (qw(newf name text integer uns Orders)) {
         $self->assert($cust->exists($name),
                       "Field ($name) doesn't exist after build_structure()");
+        if($name eq 'uns') {
+            my $min=$cust->describe($name)->{minvalue};
+            $self->assert($min == $structure{uns}->{minvalue},
+                          "Minvalue is wrong for 'uns' ($min)");
+            my $max=$cust->describe($name)->{maxvalue};
+            $self->assert($max == 0xFFFFFFFF,
+                          "Maxvalue is wrong for 'uns' ($max)");
+        }
+
         next unless $name eq 'newf';
         $self->assert($cust->describe($name)->{index},
                       "No indication of index in the created field ($name)");

@@ -33,7 +33,7 @@ use XAO::Objects;
 use base XAO::Objects->load(objname => 'FS::Glue');
 
 use vars qw($VERSION);
-($VERSION)=(q$Id: List.pm,v 1.8 2002/10/29 09:23:59 am Exp $ =~ /(\d+\.\d+)/);
+($VERSION)=(q$Id: List.pm,v 1.16 2003/11/13 00:54:00 am Exp $ =~ /(\d+\.\d+)/);
 
 ###############################################################################
 
@@ -52,7 +52,9 @@ is not a legal property ID or List ID inside of a Hash.
 sub check_name ($$) {
     my $self=shift;
     my $name=shift;
-    return (defined($name) && $name =~ /^[a-z0-9_]*$/i && length($name)<=30);
+    return (defined($name) &&
+           $name =~ /^[a-z0-9_]+$/i &&
+           length($name)<=$self->key_length);
 }
 
 ###############################################################################
@@ -103,8 +105,8 @@ sub container_object ($) {
     #
     my $uri=$self->uri;
     if(defined($uri)) {
-        $uri=~/^((\/\w+)*)\/(\w+)$/ || $self->throw("container_object - wrong uri ($uri)");
-        $uri=$1;
+        my @path=split(/\/+/,$uri);
+        $uri=join('/',@path[0..$#path-1]);
     }
 
     XAO::Objects->new(
@@ -121,7 +123,7 @@ sub container_object ($) {
 
 =item delete ($)
 
-Deletes object from the list - first call destroy on the object to
+Deletes object from the list - first calls destroy on the object to
 recursively delete its content and then drops it from the list.
 
 =cut
@@ -139,12 +141,23 @@ sub delete ($$) {
 
 ###############################################################################
 
-sub describe {
+=item describe ()
+
+Describes itself, returns a hash reference with at least the following
+elements:
+
+ type       => 'list'
+ class      => class name of Hashes stored inside
+ key        => key name
+
+=cut
+
+sub describe ($;$) {
     my $self=shift;
     return {
-        type => 'list',
-        class => $$self->{class_name},
-        key => $$self->{key_name},
+        type    => @_ ? 'hash' : 'list',
+        class   => $$self->{class_name},
+        key     => $$self->{key_name},
     };
 }
 
@@ -194,7 +207,10 @@ sub get ($$) {
 
     my @results=map {
         my $id=$self->_find_unique_id($_) ||
-            throw $self "get - no such object ($_)";
+            throw $self "get - no such object ($_, uri=".$self->uri.")";
+
+        $self->check_name($_) ||
+            throw $self "get - wrong name ($_)";
 
         XAO::Objects->new(
             objname => $$self->{class_name},
@@ -224,6 +240,30 @@ that list can store.
 sub get_new ($) {
     my $self=shift;
     $self->_glue->new(objname => $$self->{class_name});
+}
+
+###############################################################################
+
+=item glue ()
+
+Returns the Glue object which was used to retrieve the current object
+from.
+
+=cut
+
+# Implemented in Glue
+
+###############################################################################
+
+=item key_length
+
+Returns key length for the given list. Default is 30.
+
+=cut
+
+sub key_length ($) {
+    my $self=shift;
+    return $$self->{key_length} || 30;
 }
 
 ###############################################################################
@@ -333,8 +373,17 @@ retrieve new stored object from database you will have to call get().
 
 sub put ($$;$) {
     my $self=shift;
-    my $name=(@_ == 1) ? undef : shift;
-    my $value=shift;
+
+    my ($value,$name);
+    if(@_ == 1) {
+        $name=undef;
+        $value=$_[0];
+    }
+    else {
+        ($name,$value)=@_;
+        $self->check_name($name) ||
+            throw $self "put - wrong name (name=$name, class=$$self->{class_name}";
+    }
 
     if($$self->{detached}) {
         $self->throw("put - is not implemented yet for detached mode");
@@ -370,7 +419,7 @@ translated to the same database query:
                      'or',
                      [ 'name', 'wq', 'ugly' ]);
 
-It is possible to search on properties of some objects inner to the
+It is possible to search on properties of some objects related to the
 objects in the list. Let's say you have a list with specification values
 inside of a product. To search for products having specific value in
 their specification you would then do:
@@ -378,6 +427,59 @@ their specification you would then do:
  my $r=$list->search(['Specification/name', 'eq', 'Width'],
                      'and',
                      ['Specification/value', 'eq', '123']);
+
+You are not limited to object down the tree, you can search on object up
+the tree as well. Obviously this is mostly useful for collection objects
+because otherwise there is a single object on top and search turns into
+boolean yes/no ordeal.
+
+Example:
+
+ my $r=$invoices->search([ '/Customers/name', 'cs', 'John' ],
+                         'and',
+                         [ '../gross_premium', 'lt', 1000 ]);
+
+Sometimes it might be necessary to check is a pair of objects inside of
+some container have specific properties. This can be achieved with
+instance specificators:
+
+ my $r=$products->search([ [ 'Spec/1/name', 'eq', 'Width' ],
+                           'and',
+                           [ 'Spec/1/value', 'eq', '123' ],
+                         ],
+                         'and',
+                         [ [ 'Spec/2/name', 'eq', 'Height' ],
+                           'and',
+                           [ 'Spec/2/value', 'eq', '345' ],
+                         ]);
+
+Numbers 1 and 2 here suggest that first name/value pair must be checked
+on the same object, while the second - on another. Numbers do not have
+any meaning by themselves - 1 and 2 can be substituted with 234 and 345
+without changing effect in any way. Some very complex criteria can
+be expressed this way and in most cases execution by the underlying
+database layer will be quite optimal as no postprocessing is usually
+required.
+
+Another example is to use asterisk which means "assume a new instance
+every time". This can be useful if we want to find an object which
+container contains a couple of objects each satisfying some simple
+criteria. For instance, to find an imaginary person profile that has
+both sound and image attached:
+
+ my $r=$profiles->search([ 'Files/*/mime_type', 'sw', 'image/' ],
+                         'and',
+                         [ 'Files/*/mime_type', 'sw', 'audio/' ]);
+
+In theory bizarre cases like this should work as well, although no good
+example of real life usage comes to mind:
+
+ my $r=$list->search([ '../../A/1/B/2/C/name', 'cs', 't1' ],
+                     'and',
+                     [ '/X/A/2/B/1/C/desc', 'eq', 't2' ]);
+
+See also 'index' option below for a way to suggest a most effective
+index.
 
 This can be extended as deep as you want. See also collection()
 method on Glue and L<XAO::DO::FS::Collection> for
@@ -420,10 +522,19 @@ True if less.
 
 True if not equal.
 
+=item sw
+
+True if property starts with the given string. For example ['name',
+'sw', 'mar'] will match 'Marie Ann', but will not match 'Ann Marie'.
+
+In most databases (MySQL included) this type of search is optimized
+using indexes if they are available. Consider making the field indexable
+if you plan to perform this type of search frequently.
+
 =item wq
 
 True if property contains the given word completely. For example
-['name', 'wq', 'ann'] would math 'Ann Peters' and 'Marie Ann', but
+['name', 'wq', 'ann'] would match 'Ann Peters' and 'Marie Ann', but
 would not match 'Annette'.
 
 For best performance please make this kind of search only on fields of
@@ -470,8 +581,7 @@ Examples:
                            ]);
 
 The search() method can also accept additional options that can alter
-sorting or uniqueness of search results. These options are listed after
-required three first elements. Supported options are:
+results. Supported options are:
 
 =over
 
@@ -505,7 +615,7 @@ that.
 
 Remember that even though you sort results on the content of a field it
 is not that field that would be returned to you, you will still get a
-list of object IDs.
+list of object IDs unless you also use 'result' option.
 
 =item distinct
 
@@ -515,6 +625,33 @@ field. Example:
  my $color_ids=$products->search('category_id', 'eq', 123, {
                                     'distinct' => 'color'
                                 }); 
+
+=item debug
+
+Turns on debug messages in the underlying driver. Messages will be
+printed to standard error stream and their content depends on the
+specific driver. Usually that would be a fully prepared SQL query just
+before sending it to the SQL engine.
+
+=item index
+
+Accepts one argument -- a field name (or a path to a field) that should
+be used as an index. Normally you do not need to use this option as
+in most cases underlying driver/database will make a right decision
+automatically. This might make sense together with 'debug' option and
+manual checking of specific queries performance.
+
+Example which might make sense if you know for sure that restriction by
+image will significantly reduce number of hits, while ages range leaves
+too many matches open for checks.
+
+ my $r=$list->search([ [ 'age', 'gt', 10 ],
+                       'and',
+                       [ 'age', 'lt', 60 ],
+                     ],
+                     'and',
+                     [ 'Files/mime_type', 'sw', 'image/' ],
+                     { index => 'Files/mime_type' });
 
 =item limit
 
@@ -528,6 +665,66 @@ underlying database does not support this feature.
  my $subset=$persons->search('eye_color','eq','brown', {
                                  'limit' => 100
                             });
+
+=item result
+
+Note: [Not completely implemented yet]
+
+Be default search() method returns a reference to an array of object
+keys. Result options allows you to alter that behavior.
+
+Generally you can pass single description of return value or multiple
+descriptions as an array reference. In the first case what you get then
+is array of scalars, in the second case -- you get an array of arrays of
+scalars.
+
+Description of return value can be a scalar -- in that case it is simply
+a name of field in the database; or it can be a hash reference. For hash
+reference the only required field is 'type', that determines type of the
+result. Other parameters in the hash depend on the specific type.
+
+Recognized types are:
+
+=over
+
+=item count
+
+No other parameters, return number of would-be results for the
+search. Resulting array will have only one row if 'count' is used.
+
+=item key
+
+Returns object ID, just the same as would be returned by default.
+
+=item sum
+
+Returns arithmetic sum of all 'name' fields in the resulting set.
+
+=back
+
+Examples:
+
+ my $rr=$data->search('last_name','cs','smit', {
+                    orderby => 'last_name',
+                    result => [qw(id last_name first_name age)]
+                });
+
+ my $rr=$data->search({
+                    result => {
+                        type    => 'count',
+                    },
+                 });
+ my $count=$rr->[0];
+
+ my $rr=$data->search({
+                    result => [ {
+                        type    => 'count',
+                    }, {
+                        type    => 'sum',
+                        name    => 'gross_rev',
+                    }
+                ] });
+ my ($count,$sum)=@{$rr->[0]};
 
 =back
 

@@ -67,7 +67,7 @@ use XAO::Objects;
 use base XAO::Objects->load(objname => 'FS::Glue');
 
 use vars qw($VERSION);
-($VERSION)=(q$Id: Hash.pm,v 1.9 2002/10/29 17:50:29 am Exp $ =~ /(\d+\.\d+)/);
+($VERSION)=(q$Id: Hash.pm,v 1.18 2003/10/29 22:07:30 am Exp $ =~ /(\d+\.\d+)/);
 
 ###############################################################################
 
@@ -181,6 +181,11 @@ Examples:
  V<$AUTOINC$>        - V1, V2, V3, ..., V12345
  <$DATE$>_<$RANDOM$> - 200210282218_QWERT123
  NUM<$AUTOINC/12$>   - NUM000000000001, ..., NUM000000012345
+
+=item key_length
+
+Maximum allowed key length, default is 30 (the same as maximum field
+name length in Hashes for consistency reasons).
 
 =item maxlength
 
@@ -330,13 +335,11 @@ sub build_structure ($%) {
         if($desc) {
             while(my ($n,$v)=each %ph) {
                 next if $n eq 'name';
-                next if $n eq 'key';
-                next if $n eq 'key_format';
                 next if $n eq 'structure';
                 my $dbv=$desc->{$n};
                 (!defined($v) && !defined($dbv)) || $dbv eq $v ||
-                    $self->throw("build_structure - structure mismatch, " .
-                                 "property=$name, ($n,$v) <> ($n,$dbv)");
+                    throw $self "build_structure - structure mismatch, " .
+                                "property=$name, ($n,$v) <> ($n,$dbv)";
             }
         }
         else {
@@ -347,10 +350,27 @@ sub build_structure ($%) {
         #
         if($ph{type} eq 'list' && $ph{structure}) {
             my $ro=XAO::Objects->new(objname => $ph{class},
-                                          glue => $self->_glue);
+                                     glue => $self->_glue);
             $ro->build_structure($ph{structure});
         }
     }
+}
+
+###############################################################################
+
+=item collection_key ()
+
+Returns the same ID of the object that would be used be a collection
+object holding this object. See L<XAO::DO::FS::Collection> and
+collection() method on the glue object.
+
+Will return undef on detached objects.
+
+=cut
+
+sub collection_key ($) {
+    my $self=shift;
+    return $$self->{unique_id};
 }
 
 ###############################################################################
@@ -360,7 +380,7 @@ sub build_structure ($%) {
 If current object is not on top level returns key that refers to the
 current object in the container object that contains current object.
 
-Would return undef if current object was created with "new" and had
+Will return undef if current object was created with "new" and had
 never been stored anywhere.
 
 =cut
@@ -398,8 +418,8 @@ sub container_object ($) {
     #
     my $uri=$self->uri;
     if(defined($uri)) {
-        $uri=~/^((\/\w+)*)\/(\w+)$/ || $self->throw("container_object - wrong uri ($uri)");
-        $uri=$1;
+        my @path=split(/\/+/,$uri);
+        $uri=join('/',@path[0..$#path-1]);
     }
 
     XAO::Objects->new(
@@ -729,7 +749,8 @@ sub get ($$) {
             }
             else {
                 my $value=$self->_retrieve_data_fields($name);
-                $value=$self->_field_default($name,$field) unless defined($value);
+                defined $value ||
+                    throw $self "get('$name') - db query returned undef";
                 return $value;
             }
         }
@@ -787,6 +808,17 @@ sub get ($$) {
         }
     }
 }
+
+###############################################################################
+
+=item glue ()
+
+Returns the Glue object which was used to retrieve the current object
+from.
+
+=cut
+
+# Implemented in Glue
 
 ###############################################################################
 
@@ -871,7 +903,8 @@ sub new ($%) {
     else {
         $$self->{key_name}=$args->{key_name};
         defined($$self->{key_name}) || $self->throw("new - no 'key_name' passed");
-        $$self->{key_value}=$args->{key_value} || $self->get($args->{key_name});
+        $$self->{key_value}=$args->{key_value} ||
+                            $self->get($args->{key_name});
 
         $$self->{list_base_name}=$args->{list_base_name};
         $$self->{list_base_id}=$args->{list_base_id};
@@ -906,7 +939,7 @@ sub objtype ($) {
 
 ###############################################################################
 
-=item put ($$)
+=item put (%)
 
 Stores new value into the Hash object. Values can currently only be
 strings and numbers, you cannot store a list.
@@ -925,63 +958,92 @@ error will be thrown.
 Value must meet constrains set for the placeholder, otherwise error will
 be thrown and no changes will be made.
 
+More then one name/value pair can be given on the same line. For
+example, all three code snippets below will have the same effect, but
+first will be slower:
+
+ # One by one, the slowest way.
+ #
+ $obj->put(first_name => 'John');
+ $obj->put(last_name => 'Silver');
+ $obj->put(age => '50');
+
+ # Hash-like array, will translate to one SQL update statement.
+ #
+ $obj->put(first_name => 'John', last_name => 'Silver', age => 50);
+
+ # Hash reference
+ #
+ my %data=(
+    first_name  => 'John',
+    last_name   => 'Silver',
+    age         => 50,
+ );
+ $obj->put(\%data);
+
 =cut
 
 sub put ($$$) {
     my $self=shift;
-    my $name=shift;
-    my $value=shift;
+    my $data=get_args(\@_);
 
-    my $field=$self->_field_description($name);
-    $field || $self->throw("put($name,...) - not defined field name");
+    my $detached=$$self->{detached};
 
-    $value=$self->_field_default($name,$field) unless defined($value);
+    my @data_keys=CORE::keys %$data;
+    foreach my $name (@data_keys) {
+        my $value=$data->{$name};
 
-    my $type=$field->{type};
-    if($type eq 'list') {
-        $self->throw("put - storing lists not implemented yet");
-    }
-    elsif($type eq 'key') {
-        $self->throw("put - attempt to modify hash key");
-    }
-    elsif($name eq 'unique_id') {
-        $self->throw("put - attempt to modify unique_id");
-    }
-    elsif($type eq 'text' || $type eq 'words') {
-        length($value) <= $field->{maxlength} ||
-            $self->throw("put - value is longer then $field->{maxlength} for $name");
+        my $field=$self->_field_description($name);
+        $field || $self->throw("put($name,...) - not defined field name");
 
-        if($$self->{detached}) {
-            $$self->{data}->{$name}=$value;
+        if(!defined $value) {
+            $data->{$name}=$value=$self->_field_default($name,$field);
+        }
+
+        my $type=$field->{type};
+        if($type eq 'list') {
+            $self->throw("put - storing lists not implemented yet");
+        }
+        elsif($type eq 'key') {
+            $self->throw("put - attempt to modify hash key");
+        }
+        elsif($name eq 'unique_id') {
+            $self->throw("put - attempt to modify unique_id");
+        }
+        elsif($type eq 'text' || $type eq 'words') {
+            length($value) <= $field->{maxlength} ||
+                $self->throw("put - value is longer then $field->{maxlength} for $name");
+        }
+        elsif($type eq 'integer' || $type eq 'real') {
+            $value=$self->_field_default($name,$field) if $value eq '';
+
+            !defined($field->{minvalue}) || $value>=$field->{minvalue} ||
+                $self->throw("put - value ($value) is less then $field->{minvalue} for $name");
+
+            !defined($field->{maxvalue}) || $value<=$field->{maxvalue} ||
+                $self->throw("put - value ($value) is bigger then $field->{maxvalue} for $name");
         }
         else {
-            if($type eq 'words') {
-                $self->_store_dictionary_field($name,$value);
-            }
-            else {
-                $self->_store_data_field($name,$value);
-            }
+            throw $self "put - something is wrong";
         }
     }
-    elsif($type eq 'integer' || $type eq 'real') {
-        $value=$self->_field_default($name,$field) if $value eq '';
 
-        !defined($field->{minvalue}) || $value>=$field->{minvalue} ||
-            $self->throw("put - value ($value) is less then $field->{minvalue} for $name");
-
-        !defined($field->{maxvalue}) || $value<=$field->{maxvalue} ||
-            $self->throw("put - value ($value) is bigger then $field->{maxvalue} for $name");
-
-        if($$self->{detached}) {
-            $$self->{data}->{$name}=$value;
-        } else {
-            $self->_store_data_field($name,$value);
-        }
+    ##
+    # Storing all values at once
+    #
+    if($detached) {
+        @{$$self->{data}}{@data_keys}=values %$data;
     }
     else {
-        $self->throw("Something wrong");
+        $self->_store_data_fields($data);
     }
-    $value;
+
+    ##
+    # For multi-value put with hash reference it will return undef,
+    # but that's OK -- there is no good answer to what "the value" is
+    # anyway.
+    #
+    return $_[1];
 }
 
 ###############################################################################

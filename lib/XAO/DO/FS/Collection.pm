@@ -31,7 +31,7 @@ use XAO::Objects;
 use base XAO::Objects->load(objname => 'FS::Glue');
 
 use vars qw($VERSION);
-($VERSION)=(q$Id: Collection.pm,v 1.2 2002/01/04 01:47:37 am Exp $ =~ /(\d+\.\d+)/);
+($VERSION)=(q$Id: Collection.pm,v 1.7 2003/10/29 22:07:30 am Exp $ =~ /(\d+\.\d+)/);
 
 ###############################################################################
 
@@ -57,6 +57,28 @@ Makes no sense for Collection, will throw an error.
 sub delete () {
     my $self=shift;
     $self->throw("delete() - makes no sense on Collection object");
+}
+
+###############################################################################
+
+=item describe () {
+
+Describes itself, returns a hash reference with at least the following
+elements:
+
+ type       => 'collection'
+ class      => class name
+ key        => key name
+
+=cut
+
+sub describe ($;$) {
+    my $self=shift;
+    return {
+        type    => @_ ? 'hash' : 'collection',
+        class   => $$self->{class_name},
+        key     => $$self->{key_name},
+    };
 }
 
 ###############################################################################
@@ -97,6 +119,9 @@ method to retrieve multiple Hash references at once.
 If an object does not exist an error will be thrown, use exists() method
 to check if you really need to.
 
+Note: It does not check if the object still exists in the database! If
+you need to be sure that the object does exist use
+
 =cut
 
 sub get ($$) {
@@ -105,17 +130,46 @@ sub get ($$) {
     $self->throw("get - at least one ID required") unless @_;
 
     my @results=map {
-        $_ || $self->throw("get - no object ID given");
-        XAO::Objects->new(objname => $$self->{class_name},
-                          glue => $self->_glue,
-                          unique_id => $_,
-                          key_name => $$self->{key_name},
-                          list_base_name => $$self->{base_name},
-                         );
+        $_ ||
+            throw $self "get - no object ID given";
+        ref($_) &&
+            throw $self "get - should be a scalar, not a ".ref($_)." reference";
+        XAO::Objects->new(
+            objname         => $$self->{class_name},
+            glue            => $self->_glue,
+            unique_id       => $_,
+            key_name        => $$self->{key_name},
+            list_base_name  => $$self->{base_name},
+        );
     } @_;
 
     @_==1 ? $results[0] : @results;
 }
+
+###############################################################################
+
+=item get_new ()
+
+Convenience method that returns new empty detached object of the type
+that collection operates on.
+
+=cut
+
+sub get_new ($) {
+    my $self=shift;
+    $self->glue->new(objname => $$self->{class_name});
+}
+
+###############################################################################
+
+=item glue ()
+
+Returns the Glue object which was used to retrieve the current object
+from.
+
+=cut
+
+# Implemented in Glue
 
 ###############################################################################
 

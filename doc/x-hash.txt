@@ -144,6 +144,10 @@ DESCRIPTION
              <$DATE$>_<$RANDOM$> - 200210282218_QWERT123
              NUM<$AUTOINC/12$>   - NUM000000000001, ..., NUM000000012345
 
+        key_length
+            Maximum allowed key length, default is 30 (the same as maximum
+            field name length in Hashes for consistency reasons).
+
         maxlength
             Maximum length for 'text' type in characters. If later on you
             will try to store longer text string into that field an error
@@ -246,11 +250,18 @@ DESCRIPTION
                  maxlength => 100
              });
 
+    collection_key ()
+        Returns the same ID of the object that would be used be a collection
+        object holding this object. See the XAO::DO::FS::Collection manpage
+        and collection() method on the glue object.
+
+        Will return undef on detached objects.
+
     container_key ()
         If current object is not on top level returns key that refers to the
         current object in the container object that contains current object.
 
-        Would return undef if current object was created with "new" and had
+        Will return undef if current object was created with "new" and had
         never been stored anywhere.
 
     container_object ()
@@ -413,6 +424,10 @@ DESCRIPTION
 
          my ($name,$phone,$fax)=$customer->get('name','phone','fax');
 
+    glue ()
+        Returns the Glue object which was used to retrieve the current
+        object from.
+
     is_attached ()
         Boolean method that returns true if the current object is attached
         or false otherwise.
@@ -453,7 +468,7 @@ DESCRIPTION
     objtype ()
         For all objects based on Hash returns 'Hash' string.
 
-    put ($$)
+    put (%)
         Stores new value into the Hash object. Values can currently only be
         strings and numbers, you cannot store a list.
 
@@ -470,6 +485,29 @@ DESCRIPTION
 
         Value must meet constrains set for the placeholder, otherwise error
         will be thrown and no changes will be made.
+
+        More then one name/value pair can be given on the same line. For
+        example, all three code snippets below will have the same effect,
+        but first will be slower:
+
+         # One by one, the slowest way.
+         #
+         $obj->put(first_name => 'John');
+         $obj->put(last_name => 'Silver');
+         $obj->put(age => '50');
+
+         # Hash-like array, will translate to one SQL update statement.
+         #
+         $obj->put(first_name => 'John', last_name => 'Silver', age => 50);
+
+         # Hash reference
+         #
+         my %data=(
+            first_name  => 'John',
+            last_name   => 'Silver',
+            age         => 50,
+         );
+         $obj->put(\%data);
 
     reattach ()
         The same as to call put() method on upper level container. Works
