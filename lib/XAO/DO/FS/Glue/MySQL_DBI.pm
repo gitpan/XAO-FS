@@ -33,6 +33,9 @@ use XAO::Errors qw(XAO::DO::FS::Glue::MySQL_DBI);
 use DBI;
 use DBD::mysql;
 
+use vars qw($VERSION);
+($VERSION)=(q$Id: MySQL_DBI.pm,v 1.6 2002/01/04 01:48:40 am Exp $ =~ /(\d+\.\d+)/);
+
 ###############################################################################
 
 =item new ($%)
@@ -154,7 +157,7 @@ sub add_field_integer ($$$$$) {
 
     $self->{dbh}->do($sql) || $self->throw_sql('add_field_integer');
 
-    if($unique || !$self->{no_null_indexes}) {
+    if($index && ($unique || !$self->{no_null_indexes})) {
         my $usql=$unique ? " UNIQUE" : "";
         $self->{dbh}->do("ALTER TABLE $table ADD$usql INDEX($name)") ||
             $self->throw_sql('add_field_integer');
@@ -186,7 +189,7 @@ sub add_field_real ($$$;$$) {
 
     $self->{dbh}->do($sql) || $self->throw_sql('add_field_real');
 
-    if($unique || !$self->{no_null_indexes}) {
+    if($index && ($unique || !$self->{no_null_indexes})) {
         my $usql=$unique ? " UNIQUE" : "";
         $self->{dbh}->do("ALTER TABLE $table ADD$usql INDEX($name)") ||
             $self->throw_sql('add_field_real');
@@ -231,7 +234,7 @@ sub add_field_text ($$$$$) {
     $self->{dbh}->do("ALTER TABLE $table ADD $name $sql") ||
         $self->throw_sql('add_field_text');
 
-    if($max<255 && ($unique || !$self->{no_null_indexes})) {
+    if($index && $max<255 && ($unique || !$self->{no_null_indexes})) {
         my $usql=$unique ? " UNIQUE" : "";
         $self->{dbh}->do("ALTER TABLE $table ADD$usql INDEX($name)") ||
             $self->throw_sql('add_field_text');
