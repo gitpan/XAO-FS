@@ -33,7 +33,27 @@ use XAO::Objects;
 use base XAO::Objects->load(objname => 'FS::Glue');
 
 use vars qw($VERSION);
-($VERSION)=(q$Id: List.pm,v 1.5 2002/03/19 03:37:08 am Exp $ =~ /(\d+\.\d+)/);
+($VERSION)=(q$Id: List.pm,v 1.8 2002/10/29 09:23:59 am Exp $ =~ /(\d+\.\d+)/);
+
+###############################################################################
+
+=item check_name ()
+
+Object names in lists have nearly the same set of restrains as
+in hashes with just one exception - they can start from a digit.
+Such behavior might be extended to hashes in later versions to
+eliminate this difference.
+
+For example, 123ABC456 is a legal Hash id inside of a List, but
+is not a legal property ID or List ID inside of a Hash.
+
+=cut
+
+sub check_name ($$) {
+    my $self=shift;
+    my $name=shift;
+    return (defined($name) && $name =~ /^[a-z0-9_]*$/i && length($name)<=30);
+}
 
 ###############################################################################
 
@@ -235,6 +255,8 @@ following code to get List reference:
                         type => 'list',
                         class => 'Data::Order',
                         key => 'order_id');
+
+....
 
  my $orders_list=$hash->get('Orders');
 
@@ -493,6 +515,19 @@ field. Example:
  my $color_ids=$products->search('category_id', 'eq', 123, {
                                     'distinct' => 'color'
                                 }); 
+
+=item limit
+
+Indicates that you are only interested in some limited number of results
+allowing database to return just as many and therefor optimize the query
+or data transfer.
+
+Remember, that you can still get more results then you ask for if
+underlying database does not support this feature.
+
+ my $subset=$persons->search('eye_color','eq','brown', {
+                                 'limit' => 100
+                            });
 
 =back
 

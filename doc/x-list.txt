@@ -17,6 +17,15 @@ DESCRIPTION
 
     Here is the list of all List methods (alphabetically):
 
+    check_name ()
+        Object names in lists have nearly the same set of restrains as in
+        hashes with just one exception - they can start from a digit. Such
+        behavior might be extended to hashes in later versions to eliminate
+        this difference.
+
+        For example, 123ABC456 is a legal Hash id inside of a List, but is
+        not a legal property ID or List ID inside of a Hash.
+
     container_key ()
         Returns key that refers to the current List in the upper level Hash.
 
@@ -66,6 +75,8 @@ DESCRIPTION
                                 type => 'list',
                                 class => 'Data::Order',
                                 key => 'order_id');
+
+        ....
 
          my $orders_list=$hash->get('Orders');
 
@@ -239,6 +250,18 @@ DESCRIPTION
              my $color_ids=$products->search('category_id', 'eq', 123, {
                                                 'distinct' => 'color'
                                             }); 
+
+        limit
+            Indicates that you are only interested in some limited number of
+            results allowing database to return just as many and therefor
+            optimize the query or data transfer.
+
+            Remember, that you can still get more results then you ask for
+            if underlying database does not support this feature.
+
+             my $subset=$persons->search('eye_color','eq','brown', {
+                                             'limit' => 100
+                                        });
 
         Beware that these options usually significantly decrease search
         performance. Only use them when you would do sorting or select

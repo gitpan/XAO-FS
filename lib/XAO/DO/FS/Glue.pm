@@ -50,7 +50,7 @@ use XAO::Objects;
 use base XAO::Objects->load(objname => 'Atom');
 
 use vars qw($VERSION);
-($VERSION)=(q$Id: Glue.pm,v 1.12 2002/03/19 03:37:08 am Exp $ =~ /(\d+\.\d+)/);
+($VERSION)=(q$Id: Glue.pm,v 1.22 2002/10/29 09:23:58 am Exp $ =~ /(\d+\.\d+)/);
 
 ###############################################################################
 
@@ -567,13 +567,11 @@ sub _field_default ($$) {
 
     my $desc=shift || $self->_field_description($field);
 
-#dprint "Checking default for '$field', stored=",$desc->{default};
-
     return $desc->{default} if defined($desc->{default});
 
     my $type=$desc->{type};
     my $default;
-    if($type eq 'text' || $type eq 'words') {
+    if($type eq 'text') {
         $default='';
     }
     elsif($type eq 'integer' || $type eq 'real') {
@@ -598,8 +596,6 @@ sub _field_default ($$) {
     }
 
     $desc->{default}=$default;
-
-#dprint "Checking default for '$field', calculated=",$desc->{default};
 
     return $default;
 }
@@ -713,20 +709,6 @@ sub _store_data_field ($$$$$) {
     my ($name,$value)=@_;
     my $table=$self->_class_description->{table};
     $self->_driver->update_field($table,$$self->{unique_id},$name,$value);
-}
-
-###############################################################################
-
-##
-# Stores dictionary field (type=='words')
-#
-sub _store_dictionary_field ($$$$$) {
-    my $self=shift;
-    my ($name,$value)=@_;
-    my $table=$self->_class_description->{table};
-    $self->_driver->update_field($table,$$self->{unique_id},$name,$value);
-    $self->_driver->update_dictionary($table,$$self->{unique_id},
-                                      $name,$self->_split_words($value));
 }
 
 ###############################################################################
@@ -865,16 +847,21 @@ sub _list_search ($%) {
     ##
     # Post-processing results if required. The only way to get here
     # currently is if database driver does not support regex'es and
-    # ws/wq search was erformed on non-dictionary field.
+    # ws/wq search was performed.
     #
     if($query->{post_process}) {
         $self->throw('TODO; post-processing not supported yet, mail am@xao.com');
     }
 
     ##
-    # Done
+    # Done.
     #
-    [ map { $_->[0] } @$list ];
+    if(@{$query->{fields_list}} > 1) {
+        return [ map { $_->[0] } @$list ];
+    }
+    else {
+        return $list;
+    }
 }
 
 ###############################################################################
@@ -896,6 +883,7 @@ following structure, not a string:
  post_process => is non-zero if there could be extra rows in the search
                  results because of some condition that could not be
                  expressed adequately in SQL.
+ options      => original options from the FS query
 
 =cut
 
@@ -916,7 +904,7 @@ sub _build_search_query ($%) {
     my %fields_map;
     my $post_process=0;
     my $clause;
-    if($condition) {
+    if($condition && (ref($condition) ne 'ARRAY' || @$condition)) {
         $clause=$self->_build_search_clause(\%classes,
                                             \@values,
                                             \%fields_map,
@@ -936,7 +924,6 @@ sub _build_search_query ($%) {
     #
     my %return_fields;
     my @distinct;
-    my $reverse;
     my @orderby;
     my $options=$args->{options};
     if($options) {
@@ -978,6 +965,9 @@ sub _build_search_query ($%) {
                     push(@orderby,$o,$sqlfn);
                 }
             }
+            elsif(lc($option) eq 'limit') {
+                # pass through, handled in the driver
+            }
             else {
                 $self->throw("_build_search_query - unknown option '$option'");
             }
@@ -1001,12 +991,26 @@ sub _build_search_query ($%) {
     my $previous;
     my $wrapped;
     my $glue=$self->_glue;
-    foreach my $cn (sort { $classes{$a} cmp $classes{$b} } keys %classes) {
+    my %rev_classes;
+    foreach my $cn (keys %classes) {
+        my $ci=$classes{$cn};
+        if(ref($ci)) {
+            delete $ci->{max};
+            foreach my $i (CORE::values %$ci) {
+                $rev_classes{$i}=$cn;
+            }
+        }
+        else {
+            $rev_classes{$ci}=$cn;
+        }
+    }
+    foreach my $ci (sort keys %rev_classes) {
+        my $cn=$rev_classes{$ci};
         my $desc=$self->_class_description($cn);
         my $table=$desc->{table};
         my $item={ table => $table,
                    class => $cn,
-                   index => $classes{$cn}
+                   index => $ci,
                  };
         push(@tables_list,$item);
 
@@ -1018,11 +1022,12 @@ sub _build_search_query ($%) {
 
             my $upper_class=$glue->upper_class($cn);
             my $conn=$glue->_connector_name($cn,$upper_class);
-            $conn=$classes{$cn} . '.' .
-                  $self->_driver->mangle_field_name($conn);
+            if($conn) {
+                $conn=$ci . '.' . $self->_driver->mangle_field_name($conn);
 
-            $clause.=" AND " if $clause;
-            $clause.="$classes{$upper_class}.unique_id=$conn";
+                $clause.=" AND " if $clause;
+                $clause.="$classes{$upper_class}.unique_id=$conn";
+            }
         }
         $previous=1;
     }
@@ -1079,7 +1084,7 @@ sub _build_search_query ($%) {
         }
     }
 
-    # dprint "SQL: $sql";
+    ### dprint "SQL: $sql";
 
     ##
     # Returning resulting hash
@@ -1095,6 +1100,7 @@ sub _build_search_query ($%) {
         distinct => \@distinct,
         order_by => \@orderby,
         post_process => $post_process,
+        options => $options,
     };
 }
 
@@ -1105,7 +1111,7 @@ sub _build_search_query ($%) {
 Builds SQL field name including table alias from field path like
 'Specification/value'.
 
-Returns array consisting of translated field name, final class name,
+XXX - Returns array consisting of translated field name, final class name,
 class description and field description.
 
 =cut
@@ -1120,10 +1126,14 @@ sub _build_search_field ($$$) {
 
     $classes->{$class_name}=$classes->{index}++ unless $classes->{$class_name};
 
+    my $class_index;
+
     my $desc=$$self->{class_description};
     my @path=split(/\/+/,$lha);
     $lha=pop @path;
-    foreach my $n (@path) {
+    for(my $i=0; $i!=@path; $i++) {
+        my $n=$path[$i];
+
         my $fd=$desc->{fields}->{$n} ||
             $self->throw("_build_search_field - unknown field '$n' in $lha");
         $fd->{type} eq 'list' ||
@@ -1131,16 +1141,102 @@ sub _build_search_field ($$$) {
         $class_name=$fd->{class};
         $desc=$self->_class_description($class_name);
 
-        if(! $classes->{$class_name}) {
-            $classes->{$class_name}=$classes->{index}++;
+        my $tag=$i+1==@path ? '' : $path[$i+1];
+        if($tag eq '*' || $tag=~/^\d+$/) {
+            $i++;
+
+            ##
+            # XXX - To fix this we need a lot of changes in the code, we
+            # need no single name based table dependency, but some sort
+            # of dependencies stack for each final field. Would be nice
+            # to have though!
+            #
+            $i+1==@path ||
+                throw $self "_build_search_field - modifiers supported on last element only !TODO! (".join('/',@path,$lha).")";
+        }
+
+        if($tag eq '') {
+            if(exists $classes->{$class_name}) {
+                $class_index=$classes->{$class_name};
+                if(ref($class_index)) {
+                    $class_index=$class_index->{999} ||
+                                 $class_index->{$class_index->{max}} ||
+                        throw $self "_build_search_field - OOPS, can't find class index ($class_name,$lha)";
+                }
+            }
+            else {
+                $classes->{$class_name}=$classes->{index}++;
+            }
+        }
+        elsif($tag eq '*') {
+            $class_index=$classes->{index}++;
+            if(exists $classes->{$class_name}) {
+                my $d=$classes->{$class_name};
+                if(ref($d)) {
+                    my $m=$d->{max}+1;
+                    $d->{$m}=$class_index;
+                    $d->{max}=$m;
+                }
+                else {
+                    $d={
+                        max => 1000,
+                        999 => $d,
+                        1000 => $class_index,
+                    };
+                }
+                $classes->{$class_name}=$d;
+            }
+            else {
+                $classes->{$class_name}={
+                    max => 1000,
+                    1000 => $class_index,
+                };
+            }
+        }
+        elsif($tag =~ /^\d+$/) {
+            if(exists $classes->{$class_name}) {
+                my $d=$classes->{$class_name};
+                if(ref($d)) {
+                    if(exists $d->{$tag}) {
+                        $class_index=$d->{tag};
+                    }
+                    else {
+                        $class_index=$classes->{index}++;
+                        $d->{$tag}=$class_index;
+                        $d->{max}=$tag if $tag>$d->{max};
+                    }
+                }
+                else {
+                    $class_index=$classes->{index}++;
+                    $d={
+                        $tag    => $class_index,
+                        999     => $d,
+                        max     => $tag>999 ? $tag : 999,
+                    };
+                }
+                $classes->{$class_name}=$d;
+            }
+            else {
+                $class_index=$classes->{index}++;
+                $classes->{$class_name}={
+                    max => $tag,
+                    $tag => $class_index,
+                };
+            }
         }
     }
 
     my $field_desc=$desc->{fields}->{$lha} ||
         $self->throw("_build_search_field - unknown field '$lha'");
 
-    $lha=$classes->{$class_name} . '.' .
-         $self->_driver->mangle_field_name($lha);
+    if(!$class_index) {
+        my $ci=$classes->{$class_name};
+        $class_index=ref($ci) ? ($ci->{999} || $ci->{$ci->{max}}) : $ci;
+        $class_index ||
+            throw $self "_build_search_field - OOPS, can't get class_index ($class_name, $lha)";
+    }
+
+    $lha=$class_index . '.' . $self->_driver->mangle_field_name($lha);
 
     ($lha,$field_desc);
 }
@@ -1270,35 +1366,25 @@ sub _build_search_clause ($$$$$$) {
         $clause="$field LIKE '" . '%' . $rha_escaped . '%' . "'";
     }
     elsif($op eq 'ws') {
-        if($field_desc->{type} eq 'words') {
-            $self->throw("Not implemented ws on words");
+        my $tf;
+        ($clause,$tf)=$self->_driver->search_clause_ws($field,$rha,$rha_escaped);
+        if(!$clause) {
+            $clause="$field LIKE '" . '%' . $rha_escaped . '%' . "'";
+            $$post_process=1;
         }
-        else {
-            my $tf;
-            ($clause,$tf)=$self->_driver->search_clause_ws($field,$rha,$rha_escaped);
-            if(!$clause) {
-                $clause="$field LIKE '" . '%' . $rha_escaped . '%' . "'";
-                $$post_process=1;
-            }
-            elsif(defined($tf)) {
-                push(@$values,$tf);
-            }
+        elsif(defined($tf)) {
+            push(@$values,$tf);
         }
     }
     elsif($op eq 'wq') {
-        if($field_desc->{type} eq 'words') {
-            $self->throw("Not implemented wq on words");
+        my $tf;
+        ($clause,$tf)=$self->_driver->search_clause_wq($field,$rha,$rha_escaped);
+        if(!$clause) {
+            $clause="$field LIKE '" . '%' . $rha_escaped . '%' . "'";
+            $$post_process=1;
         }
-        else {
-            my $tf;
-            ($clause,$tf)=$self->_driver->search_clause_wq($field,$rha,$rha_escaped);
-            if(!$clause) {
-                $clause="$field LIKE '" . '%' . $rha_escaped . '%' . "'";
-                $$post_process=1;
-            }
-            elsif(defined($tf)) {
-                push(@$values,$tf);
-            }
+        elsif(defined($tf)) {
+            push(@$values,$tf);
         }
     }
     else {
@@ -1324,8 +1410,12 @@ sub _list_setup ($) {
     my $class_name=$$self->{class_name} || $self->throw("_setup_list - no class name given");
     my $base_name=$$self->{base_name} || $self->throw("_setup_list - no base class name given");
     $$self->{connector_name}=$glue->_connector_name($class_name,$base_name);
-    $$self->{key_name}=$glue->_list_key_name($class_name,$base_name);
     $$self->{class_description}=$$glue->{classes}->{$class_name};
+    $$self->{key_name}=$glue->_list_key_name($class_name,$base_name);
+
+    my $kdesc=$$self->{class_description}->{fields}->{$$self->{key_name}};
+    $$self->{key_format}=$kdesc->{key_format};
+    $$self->{key_unique_id}=$kdesc->{key_unique_id};
 }
 
 ##
@@ -1364,7 +1454,7 @@ sub _list_unlink_object ($$$) {
 #
 sub _list_store_object ($$$) {
     my $self=shift;
-    my ($name,$value)=@_;
+    my ($key_value,$value)=@_;
 
     ref($value) ||
         $self->throw("_list_store_object - value must be an object reference");
@@ -1386,37 +1476,58 @@ sub _list_store_object ($$$) {
     my $table=$desc->{table};
     $table || $self->throw("_list_store_object - no table");
 
+    ##
+    # If there is no name for the object then it needs to be generated
+    # according to key_format.
+    #
     my $driver=$self->_driver;
-    $name=$driver->store_row($table,
-                             $$self->{key_name},$name,
-                             $$self->{connector_name},$$self->{base_id},
-                             \%fields);
-
-    my $uid;
-    foreach my $fn (keys %{$desc->{fields}}) {
-        next unless $desc->{fields}->{$fn}->{type} eq 'words';
-        if(!$uid) {
-            $uid=$driver->unique_id($table,
-                                    $$self->{key_name},$name,
-                                    $$self->{connector_name},$$self->{base_id});
-        }
-        $driver->update_dictionary($table,$uid,
-                                   $fn,$self->_split_words($fields{$fn}));
+    my $key_name=$$self->{key_name};
+    if(!$key_value) {
+        my $format=$$self->{key_format} || '<$RANDOM$>';
+        my $uid=$$self->{key_unique_id};
+        my $translate=sub {
+            my ($kw,$opt)=@_;
+            my $text='';
+            if($kw eq 'RANDOM') {
+                $text=XAO::Utils::generate_key();
+            }
+            elsif($kw eq 'AUTOINC') {
+                $uid || throw $self "_list_store_object - no key_unique_id known, internal bug";
+                my $seq=$driver->increment_key_seq($uid);
+                $text=$opt ? sprintf('%0'.$opt.'u',$seq)
+                           : sprintf('%u',$seq);
+            }
+            elsif($kw eq 'GMTIME') {
+                $text=time;
+            }
+            elsif($kw eq 'DATE') {
+                my @t=localtime;
+                $text=sprintf('%04u%02u%02u%02u%02u%02u',
+                              $t[5]+1900,$t[4]+1,$t[3],
+                              $t[2],$t[1],$t[0]);
+            }
+            else {
+                throw $self "_list_store_object - unsupported key format '$format'";
+            }
+            return $text;
+        };
+        $key_value=sub {
+            my $key=$format;
+            $key=~s{<\$(\w+)(/(\w+))?\$>}
+                   {&$translate($1,$3)}ge;
+            return $key;
+        };
     }
 
-    $name;
-}
+    ##
+    # Storing...
+    #
+    $key_value=$driver->store_row($table,
+                                  $key_name,$key_value,
+                                  $$self->{connector_name},$$self->{base_id},
+                                  \%fields);
 
-##
-# Splits text string to words and returns array reference
-#
-sub _split_words ($$) {
-    my $self=shift;
-    my $text=shift;
-    [ defined($text)
-        ? map { length($_) ? (lc($_)) : () } split(/\W+/,$text)
-        : ''
-    ];
+    return $key_value;
 }
 
 ##
@@ -1425,11 +1536,6 @@ sub _split_words ($$) {
 sub _add_data_placeholder ($%) {
     my $self=shift;
     my $args=get_args(\@_);
-
-    ##
-    # Temporarily make words -> text until words handling is fixed.
-    #
-    $args->{type}='text' if $args->{type} eq 'words';
 
     my $name=$args->{name};
     my $type=$args->{type};
@@ -1449,55 +1555,52 @@ sub _add_data_placeholder ($%) {
     # Checking if this is a hash in a list stored in some other hash
     # other then Global.
     #
-    my $connected=$self->upper_class eq 'FS::Global' ? 0 : 1;
+    my $upper_class=$self->upper_class;
+    my $connected=(!$upper_class || $upper_class eq 'FS::Global') ? 0 : 1;
+
+    ##
+    # Checking or setting the default value.
+    #
+    $fdesc{default}=$self->_field_default($name,\%fdesc);
 
     ##
     # Adding...
     #
     if($type eq 'words') {
-        $fdesc{maxlength}=100 unless $fdesc{maxlength};
-        $driver->add_field_text($table,$name,$fdesc{index},$fdesc{unique},
-                                $fdesc{maxlength},$connected);
-        $driver->setup_dictionary($table,$name,$fdesc{maxlength});
+        throw $self "_add_data_placeholder - 'words' not supported any more";
     }
     elsif ($type eq 'text') {
         $fdesc{maxlength}=100 unless $fdesc{maxlength};
+
+        my $dl=length($fdesc{default});
+        $dl <= 30 ||
+            throw $self "_add_data_placeholder - default text is longer then 30 characters";
+        $dl <= $fdesc{maxlength} ||
+            throw $self "_add_data_placeholder - default text is longer then maxlength ($fdesc{maxlength})";
+
         $driver->add_field_text($table,$name,$fdesc{index},$fdesc{unique},
-                                $fdesc{maxlength},$connected);
+                                $fdesc{maxlength},$fdesc{default},$connected);
     }
     elsif ($type eq 'integer') {
         $fdesc{minvalue}=-0x80000000 unless defined($fdesc{minvalue});
         $fdesc{maxvalue}=0x7FFFFFFF unless defined($fdesc{maxvalue});
         $driver->add_field_integer($table,$name,$fdesc{index},$fdesc{unique},
-                                   $fdesc{minvalue},$fdesc{maxvalue},$connected);
+                                   $fdesc{minvalue},$fdesc{maxvalue},$fdesc{default},$connected);
     }
     elsif ($type eq 'real') {
         $fdesc{minvalue}+=0 if defined($fdesc{minvalue});
         $fdesc{maxvalue}+=0 if defined($fdesc{maxvalue});
         $driver->add_field_real($table,$name,$fdesc{index},$fdesc{unique},
-                                $fdesc{minvalue},$fdesc{maxvalue},$connected);
+                                $fdesc{minvalue},$fdesc{maxvalue},$fdesc{default},$connected);
     }
     else {
         $self->throw("_add_data_placeholder - unknown type ($type)");
     }
 
     ##
-    # Updating in-memory data with our new field and setting default
-    # value for it.
+    # Updating in-memory data with our new field.
     #
-    $fdesc{default}=$self->_field_default($name,\%fdesc);
     $desc->{fields}->{$name}=\%fdesc;
-
-    ##
-    # Checking default value length
-    #
-    if($type eq 'text' || $type eq 'words') {
-        my $dl=length($fdesc{default});
-        $dl <= 30 ||
-            throw $self "_add_data_placeholder - default text is longer then 30 characters";
-        $dl <= $fdesc{maxlength} ||
-            throw $self "_add_data_placeholder - default text is longer then maxlength ($fdesc{maxlength})";
-    }
 
     ##
     # Updating Global_Fields
@@ -1537,9 +1640,9 @@ sub _add_list_placeholder ($%) {
             $self->throw("_add_list_placeholder - bad connector name ($key)");
     }
 
-    my $glue=$self->_glue;
-    if($$glue->{classes}->{$class}) {
-        $self->throw("_add_list_placeholder - multiple lists for the same class are not allowed");
+    my $key_format=$args->{key_format} || '<$RANDOM$>';
+    if($key_format !~ /<\$RANDOM\$>/ && $key_format !~ /<\$AUTOINC(\/\d+)?\$>/) {
+        throw $self "_add_list_placeholder - key_format must include either <\$RANDOM\$> or <\$AUTOINC\$> ($key_format)";
     }
 
     XAO::Objects->load(objname => $class);
@@ -1554,33 +1657,14 @@ sub _add_list_placeholder ($%) {
     }
 
     my $driver=$self->_driver;
+    my $glue=$self->_glue;
     if($$glue->{classes}->{$class}) {
-
-        my $class_desc=$$glue->{classes}->{$class};
-        $table=$class_desc->{table};
-
-        $class_desc->{fields}->{$key} &&
-            $self->throw("_add_list_placeholder - key '$key' already exists in table '$table'");
-
-        defined($connector) && $class_desc->{fields}->{$connector} &&
-            $self->throw("_add_list_placeholder - connector '$connector' already exists in table '$table'");
-
-        $driver->add_reference_fields($table,$key,$connector);
-
-        $class_desc->{fields}->{$key}={
-            type => 'key',
-            refers => $self->objname,
-        };
-        if(defined($connector)) {
-            $class_desc->{fields}->{$connector}={
-                type => 'connector',
-                refers => $self->objname,
-            }
-        }
+        throw $self "_add_list_placeholder - multiple lists for the same class are not allowed";
     }
     else {
         foreach my $c (keys %{$$self->{classes}}) {
-            $c->{table} ne $table || $self->throw("_add_list_placeholder - such table ($table) is already used");
+            $c->{table} ne $table ||
+                throw $self "_add_list_placeholder - such table ($table) is already used";
         }
 
         $driver->add_table($table,$key,$connector);
@@ -1590,14 +1674,15 @@ sub _add_list_placeholder ($%) {
             fields => {
                 $key => {
                     type => 'key',
-                    refers => $self->objname
+                    refers => $self->objname,
+                    key_format => $key_format,
                 }
             }
         };
         if(defined($connector)) {
             $$glue->{classes}->{$class}->{fields}->{$connector}={
                 type => 'connector',
-                refers => $self->objname
+                refers => $self->objname,
             }
         }
 
@@ -1612,22 +1697,33 @@ sub _add_list_placeholder ($%) {
     $driver->store_row('Global_Fields',
                        'field_name',$key,
                        'table_name',$table,
-                       { type => 'key',
-                         refers => $self->objname
+                       { type       => 'key',
+                         refers     => $self->objname,
+                         key_format => $key_format,
+                         key_seq    => 1,
                        });
     $driver->store_row('Global_Fields',
                        'field_name',$connector,
                        'table_name',$table,
-                       { type => 'connector',
-                         refers => $self->objname
+                       { type       => 'connector',
+                         refers     => $self->objname
                        }) if defined($connector);
     $desc->{fields}->{$name}=$args;
     $driver->store_row('Global_Fields',
                        'field_name',$name,
                        'table_name',$desc->{table},
-                       { type => 'list',
-                         refers => $class
+                       { type       => 'list',
+                         refers     => $class
                        });
+
+    ##
+    # Setting unique_id of the row where key sequence is stored. This is
+    # used later in storing auto-keyed objects.
+    #
+    my $key_uid=$driver->unique_id('Global_Fields',
+                                   'field_name',$key,
+                                   'table_name',$table);
+    $$glue->{classes}->{$class}->{fields}->{$key}->{key_unique_id}=$key_uid;
 }
 
 ##

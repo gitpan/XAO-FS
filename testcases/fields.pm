@@ -326,7 +326,7 @@ sub test_unique {
     my $list=$odb->fetch('/Customers');
     $list->destroy();
 
-    foreach my $type (qw(text words integer real)) {
+    foreach my $type (qw(text integer real)) {
 
         my $c=$list->get_new();
 
@@ -384,8 +384,6 @@ sub test_unique {
     }
 }
 
-=cut
-
 ##
 # Checking how 'unique' works for second level objects. The trick with
 # them is that the field should be unique in the space of an enclosing
@@ -399,19 +397,16 @@ sub test_unique_2 {
     my $c1=$list->get('c1');
     my $c2=$list->get('c2');
 
-    $c1->add_placeholder(
-        name    => 'Orders',
-        type    => 'list',
-        class   => 'Data::Order',
-        key     => 'order_id',
-    );
+    foreach my $type (qw(text integer real)) {
+        $c1->add_placeholder(
+            name    => 'Orders',
+            type    => 'list',
+            class   => 'Data::Order',
+            key     => 'order_id',
+        );
 
-    my $c1list=$c1->get('Orders');
-    my $c2list=$c2->get('Orders');
+        my $order=$c1->get('Orders')->get_new;
 
-    my $order=$c1->get('Orders')->get_new;
-
-    foreach my $type (qw(text words integer real)) {
         $order->add_placeholder(
             name    => 'foo',
             type    => $type,
@@ -419,6 +414,9 @@ sub test_unique_2 {
         );
 
         $order->put(foo => 1);
+
+        my $c1list=$c1->get('Orders');
+        my $c2list=$c2->get('Orders');
 
         my $mistake;
         stderr_stop();
@@ -471,10 +469,10 @@ sub test_unique_2 {
             "Got wrong value from c2list/o2");
 
         $order->drop_placeholder('foo');
+
+        $c1->drop_placeholder('Orders');
     }
 }
-
-=pod
 
 sub test_get_multi {
     my $self=shift;
@@ -546,6 +544,10 @@ sub test_null {
     $cust->add_placeholder(name     => 'real',
                            type     => 'real',
                           );
+    $cust->add_placeholder(name     => 'int1',
+                           type     => 'integer',
+                           default  => 10000,
+                          );
     $cust->add_placeholder(name     => 'int2',
                            type     => 'integer',
                            minvalue => 1000,
@@ -562,21 +564,25 @@ sub test_null {
         },
         t2  => {
             name    => 'integer',
-            default => 0
+            default => 0,
         },
         t3  => {
-            name    => 'int2',
-            default => 1000
+            name    => 'int1',
+            default => 10000,
         },
         t4  => {
+            name    => 'int2',
+            default => 1000,
+        },
+        t5  => {
             name    => 'real',
             default => 0,
         },
-        t5  => {
+        t6  => {
             name    => 'real2',
             default => 256,
         },
-        t6  => {
+        t7  => {
             name    => 'text2',
             default => 'test',
         },
@@ -597,7 +603,6 @@ sub test_null {
         my $got=$c->get($name);
         $self->assert(defined($got),
                       "Got 'undef' for name=$name (initial)");
-
         $self->assert($got eq $expect,
                       "Expect $expect, got $got for name=$name (initial)");
 
@@ -610,7 +615,6 @@ sub test_null {
         $got=$c->get($name);
         $self->assert(defined($got),
                       "Got 'undef' for name=$name (deleted)");
-
         $self->assert($got eq $expect,
                       "Expect $expect, got $got for name=$name (deleted)");
 
@@ -621,7 +625,6 @@ sub test_null {
         $got=$c->get($name);
         $self->assert(defined($got),
                       "Got 'undef' for name=$name (put undef)");
-
         $self->assert($got eq $expect,
                       "Expect $expect, got $got for name=$name (put undef)");
 
@@ -632,7 +635,6 @@ sub test_null {
         $got=$c->get($name);
         $self->assert(defined($got),
                       "Got 'undef' for name=$name (put default)");
-
         $self->assert($got eq $expect,
                       "Expect $expect, got $got for name=$name (put default)");
 
@@ -674,7 +676,5 @@ sub test_null {
 
     }
 }
-
-=cut
 
 1;
